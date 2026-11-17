@@ -3,9 +3,31 @@ import Foundation
 struct AppRecord: Codable, Hashable, Sendable {
     let path: String
     let name: String
+    var folder: String? = nil
+    var installedAt: Date? = nil
 }
 
 enum AppScanner {
+    static func displayName(for url: URL, languages: [String] = Locale.preferredLanguages) -> String {
+        let bundle = Bundle(url: url)
+        if let bundle {
+            let preferred = Bundle.preferredLocalizations(from: bundle.localizations, forPreferences: languages)
+            for language in preferred {
+                guard let resource = bundle.url(forResource: "InfoPlist", withExtension: "strings", subdirectory: nil, localization: language),
+                      let data = try? Data(contentsOf: resource),
+                      let values = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any] else { continue }
+                for key in ["CFBundleDisplayName", "CFBundleName"] {
+                    if let name = values[key] as? String, !name.isEmpty { return name }
+                }
+            }
+        }
+        let fileName = (try? url.resourceValues(forKeys: [.localizedNameKey]))?.localizedName
+        return fileName.map { $0.hasSuffix(".app") ? String($0.dropLast(4)) : $0 }
+            ?? bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? url.deletingPathExtension().lastPathComponent
+    }
+
     static var defaultRoots: [URL] {
         [URL(fileURLWithPath: "/Applications"), URL(fileURLWithPath: "/System/Applications"), FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")]
     }
@@ -17,15 +39,18 @@ enum AppScanner {
             guard let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
             for case let url as URL in enumerator where url.pathExtension.lowercased() == "app" {
                 let path = url.standardizedFileURL.path
-                let bundle = Bundle(url: url)
-                let name = bundle?.localizedInfoDictionary?["CFBundleDisplayName"] as? String
-                    ?? bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
-                    ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
-                    ?? url.deletingPathExtension().lastPathComponent
-                found[path] = AppRecord(path: path, name: name)
+                let name = displayName(for: url)
+                let relative = url.path.dropFirst(root.standardizedFileURL.path.count).split(separator: "/")
+                let folder = relative.count > 1 ? fm.displayName(atPath: root.appendingPathComponent(String(relative[0])).path) : nil
+                let dates = try? url.resourceValues(forKeys: [.addedToDirectoryDateKey, .creationDateKey])
+                found[path] = AppRecord(path: path, name: name, folder: folder, installedAt: dates?.addedToDirectoryDate ?? dates?.creationDate)
             }
         }
-        return found.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return found.values.sorted { a, b in
+            if a.installedAt != b.installedAt { return (a.installedAt ?? .distantPast) > (b.installedAt ?? .distantPast) }
+            let comparison = a.name.localizedStandardCompare(b.name)
+            return comparison == .orderedSame ? a.path < b.path : comparison == .orderedAscending
+        }
     }
 }
 
@@ -34,11 +59,10 @@ struct Layout: Codable, Sendable {
     var paths: [String] = []
 
     mutating func reconcile(_ apps: [AppRecord]) -> [AppRecord] {
-        let byPath = Dictionary(apps.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
         var seen = Set<String>()
-        paths = paths.filter { byPath[$0] != nil && seen.insert($0).inserted }
-        paths.append(contentsOf: apps.map(\.path).filter { seen.insert($0).inserted })
-        return paths.compactMap { byPath[$0] }
+        let ordered = apps.filter { seen.insert($0.path).inserted }
+        paths = ordered.map(\.path)
+        return ordered
     }
 }
 

@@ -31,7 +31,7 @@ enum WallpaperBlurRenderer {
 
         guard let filter = CIFilter(name: "CIGaussianBlur") else { return nil }
         filter.setValue(clamped, forKey: kCIInputImageKey)
-        filter.setValue(55.0, forKey: kCIInputRadiusKey)
+        filter.setValue(32.0, forKey: kCIInputRadiusKey)
 
         guard let outputCI = filter.outputImage?.cropped(to: CGRect(origin: .zero, size: CGSize(width: targetWidth, height: targetHeight))),
               let outputCG = ciContext.createCGImage(outputCI, from: outputCI.extent) else {
@@ -73,15 +73,16 @@ enum WallpaperBlurRenderer {
         tintOverlay.frame = bounds
         tintOverlay.autoresizingMask = [.width, .height]
         tintOverlay.wantsLayer = true
-        tintOverlay.layer?.backgroundColor = NSColor(white: 0.08, alpha: 0.32).cgColor
+        tintOverlay.layer?.backgroundColor = NSColor(white: 0.08, alpha: 0.18).cgColor
         addSubview(tintOverlay)
 
         // 3. 顶层：系统毛玻璃质感混合
         effectView.frame = bounds
         effectView.autoresizingMask = [.width, .height]
-        effectView.material = .fullScreenUI
+        effectView.material = .hudWindow
         effectView.blendingMode = .withinWindow
         effectView.state = .active
+        effectView.alphaValue = 0.45
         addSubview(effectView)
     }
 
@@ -224,8 +225,8 @@ enum WallpaperBlurRenderer {
 
     override func layout() {
         super.layout()
-        // 图标固定 80x80，图标与文字间距固定 8pt，文字高度 18pt
-        let iconSize: CGFloat = 80
+        // 图标固定 96x96，图标与文字间距固定 8pt，文字高度 18pt
+        let iconSize: CGFloat = 96
         let labelHeight: CGFloat = 18
         let spacing: CGFloat = 8
         let totalContentHeight = iconSize + spacing + labelHeight
@@ -272,6 +273,8 @@ enum WallpaperBlurRenderer {
 // MARK: - 单页网格视图 (7 列 x 5 行)
 @MainActor final class PageGridView: NSView {
     private var itemViews: [AppItemView] = []
+    var columns = 7
+    var rows = 5
     var onBlankAreaClicked: (() -> Void)?
     override var isFlipped: Bool { true }
 
@@ -285,17 +288,19 @@ enum WallpaperBlurRenderer {
         wantsLayer = true
     }
 
-    func populate(apps: [AppRecord], iconCache: NSCache<NSString, NSImage>, onOpen: @escaping (AppRecord) -> Void) {
+    func populate(apps: [AppRecord], folders: [String: [AppRecord]], iconCache: NSCache<NSString, NSImage>, onOpen: @escaping (AppRecord) -> Void) {
         for sub in itemViews { sub.removeFromSuperview() }
         itemViews.removeAll()
 
         for app in apps {
             let key = app.path as NSString
             let icon: NSImage
-            if let cached = iconCache.object(forKey: key) {
+            if app.path.hasPrefix("nova-folder:") {
+                icon = Self.folderIcon(apps: folders[app.name] ?? [], iconCache: iconCache)
+            } else if let cached = iconCache.object(forKey: key) {
                 icon = cached
             } else {
-                let diskIcon = NSWorkspace.shared.icon(forFile: app.path)
+                let diskIcon = app.path.hasPrefix("nova-folder:") ? NSWorkspace.shared.icon(for: .folder) : NSWorkspace.shared.icon(forFile: app.path)
                 diskIcon.size = NSSize(width: 128, height: 128)
                 iconCache.setObject(diskIcon, forKey: key)
                 icon = diskIcon
@@ -308,16 +313,39 @@ enum WallpaperBlurRenderer {
         needsLayout = true
     }
 
+    private static func folderIcon(apps: [AppRecord], iconCache: NSCache<NSString, NSImage>) -> NSImage {
+        let image = NSImage(size: NSSize(width: 128, height: 128))
+        image.lockFocus()
+        let background = NSBezierPath(roundedRect: NSRect(x: 2, y: 2, width: 124, height: 124), xRadius: 31, yRadius: 31)
+        NSColor(white: 0.32, alpha: 0.9).setFill()
+        background.fill()
+        NSColor.white.withAlphaComponent(0.25).setStroke()
+        background.lineWidth = 1
+        background.stroke()
+        let size: CGFloat = 27
+        let gap: CGFloat = 7
+        for (index, app) in apps.prefix(9).enumerated() {
+            let key = app.path as NSString
+            let icon = iconCache.object(forKey: key) ?? NSWorkspace.shared.icon(forFile: app.path)
+            iconCache.setObject(icon, forKey: key)
+            let x = 16 + CGFloat(index % 3) * (size + gap)
+            let y = 128 - 16 - size - CGFloat(index / 3) * (size + gap)
+            icon.draw(in: NSRect(x: x, y: y, width: size, height: size))
+        }
+        image.unlockFocus()
+        return image
+    }
+
     override func layout() {
         super.layout()
         guard !itemViews.isEmpty else { return }
 
-        let cols = 7
-        let rows = 5
+        let cols = columns
+        let rows = self.rows
 
         // 计算 7 列 5 行的布局位置
-        let cellWidth = min(190, max(140, (bounds.width - 160) / CGFloat(cols)))
-        let cellHeight = min(145, max(115, bounds.height / CGFloat(rows)))
+        let cellWidth = min(190, max(1, (bounds.width - 40) / CGFloat(cols)))
+        let cellHeight = min(180, max(1, bounds.height / CGFloat(rows)))
 
         let totalGridWidth = cellWidth * CGFloat(cols)
         let totalGridHeight = cellHeight * CGFloat(rows)
@@ -347,6 +375,9 @@ enum WallpaperBlurRenderer {
 
 // MARK: - 多页横向全屏平移容器 (Paged Container View)
 @MainActor final class PagedContainerView: NSView {
+    var columns = 7
+    var rows = 5
+    var pageSize: Int { columns * rows }
     private let pagesTrackView = NSView()
     private var pageViews: [PageGridView] = []
 
@@ -383,8 +414,8 @@ enum WallpaperBlurRenderer {
         addSubview(pagesTrackView)
     }
 
-    func reloadPages(apps: [AppRecord], iconCache: NSCache<NSString, NSImage>, targetPage: Int = 0) {
-        let pageSize = 35 // 7 列 x 5 行
+    func reloadPages(apps: [AppRecord], folders: [String: [AppRecord]], iconCache: NSCache<NSString, NSImage>, targetPage: Int = 0) {
+        let pageSize = self.pageSize
         let count = max(1, (apps.count + pageSize - 1) / pageSize)
         self.pageCount = count
         self.currentPage = min(targetPage, count - 1)
@@ -403,7 +434,9 @@ enum WallpaperBlurRenderer {
             let pageApps = startIndex < apps.count ? Array(apps[startIndex..<endIndex]) : []
 
             let pageView = PageGridView(frame: NSRect(x: CGFloat(p) * screenWidth, y: 0, width: screenWidth, height: containerHeight))
-            pageView.populate(apps: pageApps, iconCache: iconCache) { [weak self] app in
+            pageView.columns = columns
+            pageView.rows = rows
+            pageView.populate(apps: pageApps, folders: folders, iconCache: iconCache) { [weak self] app in
                 self?.onOpenApp?(app)
             }
             pageView.onBlankAreaClicked = { [weak self] in
@@ -595,6 +628,11 @@ enum WallpaperBlurRenderer {
     }
 }
 
+@MainActor final class FolderBackdropView: NSView {
+    var onDismiss: (() -> Void)?
+    override func mouseDown(with event: NSEvent) { onDismiss?() }
+}
+
 // MARK: - 主应用程序代理 (AppDelegate)
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: LauncherWindow!
@@ -606,6 +644,16 @@ enum WallpaperBlurRenderer {
 
     private var apps: [AppRecord] = []
     private var filtered: [AppRecord] = []
+    private var displayed: [AppRecord] = []
+    private var folderContents: [String: [AppRecord]] = [:]
+    private var openFolder: String?
+    private var folderAnimationGeneration = 0
+    private let folderTitle = NSTextField(labelWithString: "")
+    private let folderBackdrop = FolderBackdropView()
+    private let folderPanel = NSVisualEffectView()
+    private let folderPages = PagedContainerView()
+    private let folderIndicator = PageIndicator()
+    private var activePages: PagedContainerView { openFolder == nil ? pagedContainer : folderPages }
     private var layout = Layout()
     private var watcher: AppWatcher?
     private var refreshTask: Task<Void, Never>?
@@ -636,8 +684,8 @@ enum WallpaperBlurRenderer {
             self?.filter(query: query)
         }
         searchCapsule.onReturnPressed = { [weak self] in
-            guard let self, let first = self.filtered.first else { return }
-            self.open(first)
+            guard let self, let first = self.displayed.first else { return }
+            self.activate(first)
         }
         searchCapsule.onEscapePressed = { [weak self] in
             guard let self else { return }
@@ -655,18 +703,45 @@ enum WallpaperBlurRenderer {
             self?.pageIndicator.current = page
         }
         pagedContainer.onOpenApp = { [weak self] app in
-            self?.open(app)
+            self?.activate(app)
         }
         pagedContainer.onBlankAreaClicked = { [weak self] in
-            self?.hide()
+            if self?.openFolder != nil { self?.closeFolder() } else { self?.hide() }
         }
         backgroundView.addSubview(pagedContainer)
+        folderTitle.alignment = .center
+        folderTitle.font = .systemFont(ofSize: 24, weight: .medium)
+        folderTitle.textColor = .white
+        folderBackdrop.wantsLayer = true
+        folderBackdrop.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.58).cgColor
+        folderBackdrop.autoresizingMask = [.width, .height]
+        folderBackdrop.frame = backgroundView.bounds
+        folderBackdrop.isHidden = true
+        folderBackdrop.onDismiss = { [weak self] in self?.closeFolder() }
+        backgroundView.addSubview(folderBackdrop)
+        folderPanel.material = .hudWindow
+        folderPanel.blendingMode = .withinWindow
+        folderPanel.state = .active
+        folderPanel.wantsLayer = true
+        folderPanel.layer?.cornerRadius = 24
+        folderPanel.layer?.masksToBounds = true
+        folderBackdrop.addSubview(folderPanel)
+        folderPanel.addSubview(folderTitle)
+        folderPages.columns = 6
+        folderPages.rows = 3
+        folderPages.layer?.masksToBounds = true
+        folderPages.onOpenApp = { [weak self] app in self?.open(app) }
+        folderPages.onPageChanged = { [weak self] page in self?.folderIndicator.current = page }
+        folderPanel.addSubview(folderPages)
+        folderIndicator.onSelect = { [weak self] page in self?.folderPages.scrollToPage(page) }
+        folderPanel.addSubview(folderIndicator)
 
         // 底部分页圆点指示器（原生仅圆点，无箭头）
         pageIndicator.onSelect = { [weak self] index in
             self?.pagedContainer.scrollToPage(index, animated: true)
         }
         backgroundView.addSubview(pageIndicator)
+        backgroundView.addSubview(folderBackdrop, positioned: .above, relativeTo: pageIndicator)
 
         // 全局键盘与手势监控
         setupEventMonitors()
@@ -708,6 +783,8 @@ enum WallpaperBlurRenderer {
                 if !self.searchCapsule.stringValue.isEmpty {
                     self.searchCapsule.stringValue = ""
                     self.filter(query: "")
+                } else if self.openFolder != nil {
+                    self.closeFolder()
                 } else {
                     self.hide()
                 }
@@ -715,20 +792,20 @@ enum WallpaperBlurRenderer {
             }
             // 回车键
             if event.keyCode == 36 {
-                let page = self.pagedContainer.currentPage
-                let index = page * 35
-                if index < self.filtered.count {
-                    self.open(self.filtered[index])
+                let page = self.activePages.currentPage
+                let index = page * self.activePages.pageSize
+                if index < self.displayed.count {
+                    self.activate(self.displayed[index])
                     return nil
                 }
             }
             // 左右方向键翻页（搜索框为空时）
             if event.keyCode == 123 && self.searchCapsule.stringValue.isEmpty {
-                self.pagedContainer.previousPage()
+                self.activePages.previousPage()
                 return nil
             }
             if event.keyCode == 124 && self.searchCapsule.stringValue.isEmpty {
-                self.pagedContainer.nextPage()
+                self.activePages.nextPage()
                 return nil
             }
             return event
@@ -738,9 +815,9 @@ enum WallpaperBlurRenderer {
         NSEvent.addLocalMonitorForEvents(matching: .swipe) { [weak self] event in
             guard let self, self.window.isVisible else { return event }
             if event.deltaX > 0 {
-                self.pagedContainer.previousPage()
+                self.activePages.previousPage()
             } else if event.deltaX < 0 {
-                self.pagedContainer.nextPage()
+                self.activePages.nextPage()
             }
             return nil
         }
@@ -751,7 +828,7 @@ enum WallpaperBlurRenderer {
 
             if event.hasPreciseScrollingDeltas {
                 // 触控板手势实时跟手
-                if self.pagedContainer.handleScrollWheel(event: event) {
+                if self.activePages.handleScrollWheel(event: event) {
                     return nil
                 }
             } else {
@@ -761,9 +838,9 @@ enum WallpaperBlurRenderer {
                 guard abs(delta) > 1 else { return nil }
                 if Date().timeIntervalSince(self.lastWheelTurn) > 0.3 {
                     if delta < 0 {
-                        self.pagedContainer.nextPage()
+                        self.activePages.nextPage()
                     } else {
-                        self.pagedContainer.previousPage()
+                        self.activePages.previousPage()
                     }
                     self.lastWheelTurn = Date()
                 }
@@ -823,7 +900,13 @@ enum WallpaperBlurRenderer {
         let gridHeight = max(100, gridTopY - gridBottomY)
         pagedContainer.frame = NSRect(x: 0, y: gridBottomY, width: screenWidth, height: gridHeight)
 
-        pagedContainer.reloadPages(apps: filtered, iconCache: iconCache, targetPage: pagedContainer.currentPage)
+        let panelWidth = min(screenWidth - 80, 1140)
+        let panelHeight = min(screenHeight - 100, 730)
+        folderPanel.frame = NSRect(x: (screenWidth - panelWidth) / 2, y: (screenHeight - panelHeight) / 2, width: panelWidth, height: panelHeight)
+        folderTitle.frame = NSRect(x: 0, y: panelHeight - 65, width: panelWidth, height: 30)
+        folderPages.frame = NSRect(x: 20, y: 45, width: panelWidth - 40, height: panelHeight - 125)
+        folderIndicator.frame = NSRect(x: (panelWidth - 200) / 2, y: 12, width: 200, height: 20)
+        pagedContainer.reloadPages(apps: displayed, folders: folderContents, iconCache: iconCache, targetPage: pagedContainer.currentPage)
         pageIndicator.count = pagedContainer.pageCount
         pageIndicator.current = pagedContainer.currentPage
 
@@ -874,10 +957,88 @@ enum WallpaperBlurRenderer {
 
     private func filter(query: String) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        folderAnimationGeneration += 1
+        openFolder = nil
+        folderBackdrop.isHidden = true
+        folderBackdrop.alphaValue = 1
         filtered = trimmed.isEmpty ? apps : apps.filter { $0.name.localizedStandardContains(trimmed) }
-        pagedContainer.reloadPages(apps: filtered, iconCache: iconCache, targetPage: 0)
+        folderContents = [:]
+        if trimmed.isEmpty {
+            var items: [AppRecord] = []
+            for app in filtered {
+                if let folder = app.folder {
+                    if folderContents[folder] == nil {
+                        items.append(AppRecord(path: "nova-folder:" + folder, name: folder))
+                        folderContents[folder] = []
+                    }
+                    folderContents[folder, default: []].append(app)
+                } else {
+                    items.append(app)
+                }
+            }
+            displayed = items
+        } else {
+            displayed = filtered
+        }
+        reloadDisplayed()
+    }
+
+    private func reloadDisplayed() {
+        pagedContainer.reloadPages(apps: displayed, folders: folderContents, iconCache: iconCache, targetPage: 0)
         pageIndicator.count = pagedContainer.pageCount
         pageIndicator.current = pagedContainer.currentPage
+    }
+
+    private func activate(_ app: AppRecord) {
+        if app.path.hasPrefix("nova-folder:"), let contents = folderContents[app.name] {
+            openFolder = app.name
+            folderTitle.stringValue = app.name
+            displayed = contents
+            folderPages.reloadPages(apps: contents, folders: [:], iconCache: iconCache)
+            folderIndicator.count = folderPages.pageCount
+            folderIndicator.current = folderPages.currentPage
+            folderAnimationGeneration += 1
+            let targetFrame = folderPanel.frame
+            folderBackdrop.isHidden = false
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                folderBackdrop.alphaValue = 0
+                folderPanel.frame = targetFrame.insetBy(dx: targetFrame.width * 0.04, dy: targetFrame.height * 0.04)
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.22
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    folderBackdrop.animator().alphaValue = 1
+                    folderPanel.animator().frame = targetFrame
+                }
+            } else {
+                folderBackdrop.alphaValue = 1
+            }
+        } else {
+            open(app)
+        }
+    }
+
+    private func closeFolder() {
+        guard openFolder != nil else { return }
+        folderAnimationGeneration += 1
+        let generation = folderAnimationGeneration
+        let targetFrame = folderPanel.frame
+        let page = pagedContainer.currentPage
+        let finish: @MainActor () -> Void = { [weak self] in
+            guard let self, self.folderAnimationGeneration == generation else { return }
+            self.folderPanel.frame = targetFrame
+            self.openFolder = nil
+            self.filter(query: self.searchCapsule.stringValue)
+            self.pagedContainer.scrollToPage(page, animated: false)
+        }
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { finish(); return }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            folderBackdrop.animator().alphaValue = 0
+            folderPanel.animator().frame = targetFrame.insetBy(dx: targetFrame.width * 0.04, dy: targetFrame.height * 0.04)
+        }, completionHandler: {
+            Task { @MainActor in finish() }
+        })
     }
 
     private func open(_ app: AppRecord) {
