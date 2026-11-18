@@ -1,49 +1,70 @@
 # Nova Launchpad
 
-macOS 原生离线应用启动器，当前处于阶段一开发中。需要 macOS 14 或更高版本以及 Swift 6 命令行工具；无需完整 Xcode。
+Nova Launchpad 是一个开源的 macOS 应用启动器，使用 Swift 和 AppKit 原生构建。它从系统与用户的 Applications 目录中发现应用，以接近 Launchpad 的全屏网格展示，并提供毛玻璃壁纸、文件夹、搜索和流畅翻页体验。
+
+[![许可证：Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+
+## 实际运行效果
+
+以下截图来自 Nova Launchpad 实际运行界面：
+
+### 应用启动页
+
+![Nova Launchpad 应用网格与桌面壁纸背景](docs/images/launcher.png)
+
+### 应用文件夹
+
+![Nova Launchpad 文件夹中的应用](docs/images/folder-apps.png)
+
+![Nova Launchpad 实用工具文件夹](docs/images/folder-tools.png)
+
+## 功能
+
+- 全屏应用网格、搜索过滤和页面滚动/触控板翻页
+- 透明毛玻璃壁纸背景，图标与文件夹在背景上方清晰显示
+- 文件夹展开与收起、应用右键菜单
+- 按名称或添加日期排序，扫描应用目录并刷新列表
+- GitHub Releases 更新检查、下载和重启安装
+- 多显示器、Retina 屏幕与壁纸切换支持
+
+应用扫描目录包括 `/Applications`、`/System/Applications` 和 `~/Applications`。目录变化会触发刷新，也可以从搜索框旁的设置菜单手动选择“刷新应用”。
+
+## 系统要求
+
+- macOS 14 或更高版本
+- Swift 6 命令行工具
+- 构建和运行无需完整 Xcode
+
+## 构建与运行
 
 ```sh
 ./scripts/build.sh
 open 'build/Nova Launchpad.app'
+```
+
+运行回归检查：
+
+```sh
 ./scripts/test.sh
 ```
 
-发布版本时，将 `v` 前缀的版本标签推送到 GitHub（例如 `v1.2.3`）。GitHub Actions 会自动构建并发布 ZIP 更新包、DMG 安装包和 SHA-256 校验文件。也可以在本机通过 `NOVA_VERSION=1.2.3 sh scripts/package-release.sh` 生成相同的安装产物。当前构建未签名或公证，macOS 首次打开时可能需要在“隐私与安全性”中确认打开。
+## 安装包与发布
 
-运行后输入名称搜索，回车打开当前页第一个结果，Esc 清除搜索或隐藏窗口；支持触控板两指滑动实时跟随与弹性吸附翻页，亦可点击底部分页指示圆点或按键盘左右方向键平滑翻页，点击空白背景可退出。应用隐藏后可点击 Dock 图标重新打开；菜单中的“重新扫描应用”可手动刷新，Command-Q 退出。
+本地生成 ZIP 更新包、DMG 安装包和 SHA-256 校验文件：
 
-布局保存在 `~/Library/Application Support/NovaLaunchpad/layout.json`。扫描目前覆盖系统、用户和全局 Applications 目录，使用 FSEvents 合并目录变更；尚未补充 Launch Services 注册应用及外置磁盘布局保留。当前构建为本地未签名版本。Swift Package 构建在当前机器的 Command Line Tools 上存在 PackageDescription 链接错误，提供的脚本使用 `swiftc` 直接构建。
-
-界面完全参考 macOS 原生 Launchpad 进行对齐：采用 7 列 × 5 行全屏网格排布，图标尺寸固定为 80×80 pt，图标与名称间距锁定为 8 pt，彻底释放底部呼吸空间；翻页动画基于全屏横向联动多页容器实现整屏边缘平移滑入滑出，并支持触控板跟手物理手势与 Rubber-banding 弹性阻尼。拖动排序、文件夹、全局快捷键属于后续阶段。
-
-背景效果可通过 `~/Library/Application Support/NovaLaunchpad/background.json` 配置，重启应用后生效。以下为默认值（颜色为 RGB 十六进制）：
-
-```json
-{
-  "blurRadius": 48,
-  "brightness": -0.04,
-  "saturation": 0.86,
-  "overlayColor": "182338",
-  "overlayOpacity": 0.06,
-  "tintColor": "ffffff",
-  "animationDuration": 0.30
-}
+```sh
+NOVA_VERSION=1.2.3 sh scripts/package-release.sh
 ```
 
-`blurRadius` 范围为 0–150，`brightness` 为 -1–1，`saturation` 为 0–2，`overlayOpacity` 为 0–1，`animationDuration` 为 0.05–2 秒。配置文件需要包含所有字段；无效配置会使用默认值。非白色 `tintColor` 会以轻微透明度叠加。背景按壁纸、屏幕尺寸和缩放比例缓存；无法读取壁纸时使用系统材质。
+向 GitHub 推送 `vX.Y.Z` 格式的版本标签后，GitHub Actions 会自动构建安装包并创建 Release：
 
-文件夹浮层可通过 `~/Library/Application Support/NovaLaunchpad/folder.json` 配置（修改后重启生效），需要包含全部字段：
-
-```json
-{
-  "cornerRadius": 24,
-  "backgroundOpacity": 0.88,
-  "backgroundTint": "383a40",
-  "backdropBlurRadius": 16,
-  "backdropDimOpacity": 0.20,
-  "openDuration": 0.20,
-  "closeDuration": 0.22
-}
+```sh
+git tag -a v1.2.3 -m "Nova Launchpad 1.2.3"
+git push origin v1.2.3
 ```
 
-颜色为 RGB 十六进制，时长单位为秒；无效配置会回退至默认值。
+当前发布构建未签名或公证。首次打开时，macOS 可能要求在“系统设置 → 隐私与安全性”中确认打开。
+
+## 开源许可
+
+本项目基于 [Apache License 2.0](LICENSE) 开源。

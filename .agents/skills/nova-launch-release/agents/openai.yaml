@@ -1,0 +1,6 @@
+interface:
+  display_name: "NovaLaunch Release"
+  short_description: "自动递增版本、提交改动并发布 NovaLaunch 安装包"
+  default_prompt: "Use $nova-launch-release to publish the current NovaLaunch changes as a new GitHub release."
+policy:
+  allow_implicit_invocation: true
