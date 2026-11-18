@@ -3,9 +3,9 @@ import CoreImage
 
 // Background parameters can be overridden in Application Support/NovaLaunchpad/background.json.
 struct NovaBackgroundStyle: Codable, Sendable {
-    var blurRadius: Double = 28
-    var brightness: Double = -0.12
-    var saturation: Double = 0.92
+    var blurRadius: Double = 33
+    var brightness: Double = -0.22
+    var saturation: Double = 1.32
     var overlayColor: String = "000000"
     var overlayOpacity: Double = 0.10
     var tintColor: String = "ffffff"
