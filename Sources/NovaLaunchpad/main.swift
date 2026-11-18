@@ -251,12 +251,16 @@ enum AnimationHelper {
     private let magnifier = NSImageView()
     var onMore: (() -> Void)?
     var onQueryChanged: ((String) -> Void)?
-    var onReturnPressed: (() -> Void)?
+    private var lastQuery = ""
+    var isEditing: Bool { searchField.currentEditor() != nil }
     var onEscapePressed: (() -> Void)?
 
     var stringValue: String {
         get { searchField.stringValue }
-        set { searchField.stringValue = newValue }
+        set {
+            searchField.stringValue = newValue
+            publishQuery()
+        }
     }
 
     override init(frame frameRect: NSRect) {
@@ -312,12 +316,23 @@ enum AnimationHelper {
     }
 
     func controlTextDidChange(_ obj: Notification) {
-        onQueryChanged?(searchField.stringValue)
+        publishQuery()
+    }
+
+    func searchFieldDidEndSearching(_ sender: NSSearchField) {
+        DispatchQueue.main.async { [weak self] in self?.publishQuery() }
+    }
+
+    private func publishQuery() {
+        let query = searchField.stringValue
+        guard query != lastQuery else { return }
+        lastQuery = query
+        onQueryChanged?(query)
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-            onReturnPressed?()
+            publishQuery()
             return true
         } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
             onEscapePressed?()
@@ -1308,15 +1323,10 @@ private enum AppSortOrder: Int {
             self?.updateMoreButton()
         }
         configureMoreMenu()
-        searchCapsule.onReturnPressed = { [weak self] in
-            guard let self, let first = self.displayed.first else { return }
-            self.activate(first)
-        }
         searchCapsule.onEscapePressed = { [weak self] in
             guard let self else { return }
             if !self.searchCapsule.stringValue.isEmpty {
                 self.searchCapsule.stringValue = ""
-                self.filter(query: "")
             } else {
                 self.hide()
             }
@@ -1354,6 +1364,7 @@ private enum AppSortOrder: Int {
         folderOverlay.onClosed = { [weak self] in
             guard let self else { return }
             self.openFolder = nil
+            self.updateMoreButton()
             self.displayed = self.folderMainItems
             if let query = self.pendingQuery { self.pendingQuery = nil; self.filter(query: query) }
             if self.pendingRefresh { self.pendingRefresh = false; self.refresh() }
@@ -1437,7 +1448,7 @@ private enum AppSortOrder: Int {
     }
 
     private func updateMoreButton() {
-        moreButton.isHidden = !searchCapsule.stringValue.isEmpty
+        moreButton.isHidden = openFolder != nil || !searchCapsule.stringValue.isEmpty
     }
 
     private func updateSortMenu() {
@@ -1723,7 +1734,6 @@ private enum AppSortOrder: Int {
             if event.keyCode == 53 {
                 if !self.searchCapsule.stringValue.isEmpty {
                     self.searchCapsule.stringValue = ""
-                    self.filter(query: "")
                 } else if self.openFolder != nil {
                     self.closeFolder()
                 } else {
@@ -1732,7 +1742,7 @@ private enum AppSortOrder: Int {
                 return nil
             }
             // 回车键
-            if event.keyCode == 36 {
+            if event.keyCode == 36 && (self.openFolder != nil || !self.searchCapsule.isEditing) {
                 let page = self.activePages.currentPage
                 let index = page * self.activePages.pageSize
                 if index < self.displayed.count {
@@ -1869,7 +1879,7 @@ private enum AppSortOrder: Int {
         let searchY = screenHeight - 68 - searchHeight
         searchCapsule.frame = NSRect(x: searchX, y: searchY, width: searchWidth, height: searchHeight)
         moreButton.frame = NSRect(x: searchX + searchWidth + 10, y: searchY, width: 32, height: 32)
-        moreButton.isHidden = !searchCapsule.stringValue.isEmpty
+        updateMoreButton()
 
         // 2. 底部分页指示器：居中，高度 20，位于 Dock 上方约 125pt
         let indicatorHeight: CGFloat = 20
@@ -2084,6 +2094,7 @@ private enum AppSortOrder: Int {
         folderSourceRect = source.convert(source.folderThumbnailFrame, to: folderBackdrop)
         folderMainItems = displayed
         openFolder = app.name
+        updateMoreButton()
         folderTitle.stringValue = app.name
         displayed = contents
 
