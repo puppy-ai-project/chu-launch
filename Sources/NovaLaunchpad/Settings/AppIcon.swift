@@ -6,8 +6,9 @@ enum NovaAppIcon {
         let image = NSImage(size: NSSize(width: size, height: size))
         image.lockFocus()
         let rect = NSRect(origin: .zero, size: image.size)
-        let path = NSBezierPath(roundedRect: rect.insetBy(dx: size * 0.04, dy: size * 0.04),
-                                xRadius: size * 0.23, yRadius: size * 0.23)
+        // Match the visible bounds of standard macOS icons in the Dock.
+        let path = NSBezierPath(roundedRect: rect.insetBy(dx: size * 0.105, dy: size * 0.105),
+                                xRadius: size * 0.205, yRadius: size * 0.205)
         NSGradient(colors: [
             NSColor(srgbRed: 0.22, green: 0.74, blue: 0.97, alpha: 1),
             NSColor(srgbRed: 0.23, green: 0.51, blue: 0.96, alpha: 1),
@@ -24,8 +25,9 @@ enum NovaAppIcon {
             NSColor(srgbRed: 0.20, green: 0.76, blue: 0.93, alpha: 1),
             NSColor(srgbRed: 0.12, green: 0.82, blue: 0.67, alpha: 1)
         ]
-        let cellSize = size * 0.155
-        let gap = size * 0.075
+        // Keep the tiles comfortably inset so the grid reads clearly at Dock size.
+        let cellSize = size * 0.125
+        let gap = size * 0.06
         let gridSize = cellSize * 3 + gap * 2
         let origin = CGPoint(x: (size - gridSize) / 2, y: (size - gridSize) / 2)
         for row in 0..<3 {

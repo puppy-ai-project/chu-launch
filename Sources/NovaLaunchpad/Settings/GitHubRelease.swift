@@ -20,22 +20,7 @@ struct GitHubRelease: Decodable, Sendable {
         return html_url
     }
 
-    /// 临时测试用版本与下载地址；验证完成后置为 nil 即可恢复正式 GitHub Releases 检查
-    private static let temporaryTestRelease: GitHubRelease? = GitHubRelease(
-        tag_name: "v1.0.8",
-        html_url: URL(string: "https://github.com/puppy-ai-project/chu-image/releases/download/1.0.8/ChuImage-1.0.8-mac-x64.zip")!,
-        assets: [
-            Asset(
-                name: "ChuImage-1.0.8-mac-x64.zip",
-                browser_download_url: URL(string: "https://github.com/puppy-ai-project/chu-image/releases/download/1.0.8/ChuImage-1.0.8-mac-x64.zip")!
-            )
-        ]
-    )
-
     static func latest() async throws -> Self? {
-        if let testRelease = temporaryTestRelease {
-            return testRelease
-        }
         let endpoint = URL(string: "https://api.github.com/repos/puppy-ai-project/nova-launch/releases/latest")!
         var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")

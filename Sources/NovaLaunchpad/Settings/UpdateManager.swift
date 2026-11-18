@@ -296,10 +296,6 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
             break
         }
 
-        #if DOWNLOAD_PREVIEW
-        let url = URL(string: "https://github.com/puppy-ai-project/chu-image/releases/download/1.0.8/ChuImage-1.0.8-mac-x64.zip")!
-        state = .available(version: "1.0.8", downloadURL: url)
-        #else
         state = .checking
         Task {
             do {
@@ -318,7 +314,6 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
                 state = .failed(message: "检查更新失败：\(error.localizedDescription)", retryURL: nil, retryVersion: nil)
             }
         }
-        #endif
     }
 
     func startDownload() {
@@ -401,9 +396,6 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
 
     func installAndRestart() {
         guard case .downloaded(let version, let zipURL) = state else { return }
-        #if DOWNLOAD_PREVIEW
-        return
-        #endif
         state = .installing(version: version, fileURL: zipURL)
 
         let targetAppURL = Bundle.main.bundleURL
