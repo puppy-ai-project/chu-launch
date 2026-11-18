@@ -7,19 +7,26 @@ import UniformTypeIdentifiers
 
 @MainActor private enum MenuSymbols {
     static func apply(_ symbol: String, to item: NSMenuItem) {
-        guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: symbol) else { return }
-        let configuration = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [NSColor.controlTextColor]))
-        guard let configuredImage = image.withSymbolConfiguration(configuration) else { return }
-        let attachment = NSTextAttachment()
-        attachment.image = configuredImage
-        attachment.bounds = NSRect(x: 0, y: -3, width: 16, height: 16)
-        let title = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
-        title.append(NSAttributedString(
-            string: "  \(item.title)",
-            attributes: [.font: NSFont.menuFont(ofSize: 0), .foregroundColor: NSColor.controlTextColor]
-        ))
-        item.attributedTitle = title
+        guard let symbolImage = NSImage(systemSymbolName: symbol, accessibilityDescription: symbol) else { return }
+        let configuration = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        let configured = symbolImage.withSymbolConfiguration(configuration) ?? symbolImage
+        let canvasSize = NSSize(width: 18, height: 18)
+        let uniformImage = NSImage(size: canvasSize, flipped: false) { rect in
+            let scale = min(1.0, min(rect.width / max(1, configured.size.width), rect.height / max(1, configured.size.height)))
+            let drawWidth = configured.size.width * scale
+            let drawHeight = configured.size.height * scale
+            let x = (rect.width - drawWidth) / 2
+            let y = (rect.height - drawHeight) / 2
+            configured.draw(in: NSRect(x: x, y: y, width: drawWidth, height: drawHeight))
+            return true
+        }
+        uniformImage.isTemplate = true
+        item.image = uniformImage
+        if #available(macOS 27.0, *) {
+            item.preferredImageVisibility = .visible
+        } else if item.responds(to: Selector(("preferredImageVisibility"))) {
+            item.setValue(1, forKey: "preferredImageVisibility")
+        }
     }
 }
 
@@ -1530,7 +1537,7 @@ private enum AppSortOrder: Int {
         let sort = NSMenuItem(title: "排序方式", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
         for (title, order, symbol) in [
-            ("添加日期降序", AppSortOrder.dateDescending, "calendar"),
+            ("添加日期降序", AppSortOrder.dateDescending, "calendar.badge.clock"),
             ("添加日期升序", .dateAscending, "calendar"),
             ("名称", .name, "textformat.abc")
         ] {
@@ -1551,7 +1558,7 @@ private enum AppSortOrder: Int {
         let restart = NSMenuItem(title: "重启应用", action: #selector(restartApp), keyEquivalent: "")
         restart.target = self
         moreMenu.addItem(restart)
-        MenuSymbols.apply("arrow.clockwise", to: restart)
+        MenuSymbols.apply("arrow.clockwise.circle", to: restart)
         let quit = NSMenuItem(title: "退出应用", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         moreMenu.addItem(quit)
         MenuSymbols.apply("power", to: quit)
