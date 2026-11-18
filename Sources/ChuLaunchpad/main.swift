@@ -22,9 +22,7 @@ import UniformTypeIdentifiers
         }
         uniformImage.isTemplate = true
         item.image = uniformImage
-        if #available(macOS 27.0, *) {
-            item.preferredImageVisibility = .visible
-        } else if item.responds(to: Selector(("preferredImageVisibility"))) {
+        if item.responds(to: Selector(("setPreferredImageVisibility:"))) {
             item.setValue(1, forKey: "preferredImageVisibility")
         }
     }
