@@ -3,6 +3,25 @@ import CoreImage
 import OSLog
 import Quartz
 import QuartzCore
+import UniformTypeIdentifiers
+
+@MainActor private enum MenuSymbols {
+    static func apply(_ symbol: String, to item: NSMenuItem) {
+        guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: symbol) else { return }
+        let configuration = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [NSColor.controlTextColor]))
+        guard let configuredImage = image.withSymbolConfiguration(configuration) else { return }
+        let attachment = NSTextAttachment()
+        attachment.image = configuredImage
+        attachment.bounds = NSRect(x: 0, y: -3, width: 16, height: 16)
+        let title = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
+        title.append(NSAttributedString(
+            string: "  \(item.title)",
+            attributes: [.font: NSFont.menuFont(ofSize: 0), .foregroundColor: NSColor.controlTextColor]
+        ))
+        item.attributedTitle = title
+    }
+}
 
 #if DEBUG
 @MainActor final class BackgroundDebugPanel: NSWindowController {
@@ -434,10 +453,16 @@ enum AnimationHelper {
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let appRecord, !appRecord.path.hasPrefix("chu-folder:") else { return nil }
         let menu = NSMenu()
-        for (title, action) in [("打开", #selector(openFromMenu)), ("在访达中显示", #selector(revealFromMenu)),
-                                ("显示简介", #selector(showInfo)), ("快速查看", #selector(previewAppFromMenu)),
-                                ("共享…", #selector(shareApp))] {
-            menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
+        for (title, action, symbol) in [
+            ("打开", #selector(openFromMenu), "macwindow"),
+            ("在访达中显示", #selector(revealFromMenu), "folder"),
+            ("显示简介", #selector(showInfo), "info.circle"),
+            ("快速查看", #selector(previewAppFromMenu), "eye"),
+            ("共享…", #selector(shareApp), "square.and.arrow.up")
+        ] {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+            MenuSymbols.apply(symbol, to: item)
         }
         return menu
     }
@@ -562,6 +587,11 @@ enum AnimationHelper {
 
 // MARK: - 单页网格视图 (7 列 x 5 行)
 @MainActor final class PageGridView: NSView {
+    private static let applicationIcon: NSImage = {
+        let icon = NSWorkspace.shared.icon(for: .applicationBundle)
+        icon.size = NSSize(width: 128, height: 128)
+        return icon
+    }()
     private var itemViews: [AppItemView] = []
     var columns = 7
     var rows = 5
@@ -593,10 +623,7 @@ enum AnimationHelper {
             } else if let cached = iconCache.object(forKey: key) {
                 icon = cached
             } else {
-                let diskIcon = app.path.hasPrefix("chu-folder:") ? NSWorkspace.shared.icon(for: .folder) : NSWorkspace.shared.icon(forFile: app.path)
-                diskIcon.size = NSSize(width: 128, height: 128)
-                iconCache.setObject(diskIcon, forKey: key)
-                icon = diskIcon
+                icon = Self.applicationIcon
             }
             let itemView = AppItemView()
             itemView.configure(app: app, icon: icon, onOpen: onOpen)
@@ -641,7 +668,7 @@ enum AnimationHelper {
         let inset = (128 - 3 * size - 2 * gap) / 2
         for (index, app) in apps.prefix(9).enumerated() {
             let key = app.path as NSString
-            let icon = iconCache.object(forKey: key) ?? NSWorkspace.shared.icon(forFile: app.path)
+            let icon = iconCache.object(forKey: key) ?? applicationIcon
             iconCache.setObject(icon, forKey: key)
             let x = inset + CGFloat(index % 3) * (size + gap)
             let y = 128 - inset - size - CGFloat(index / 3) * (size + gap)
@@ -1358,7 +1385,7 @@ private enum AppSortOrder: Int {
     private let logger = Logger(subsystem: "com.withqq.chu-launchpad.app", category: "launcher")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(toggleFromDock(_:)),
             name: Notification.Name("com.withqq.chu-launchpad.toggle"), object: nil, suspensionBehavior: .deliverImmediately)
         NSApp.applicationIconImage = ChuAppIcon.image()
@@ -1474,10 +1501,18 @@ private enum AppSortOrder: Int {
         }
         LaunchAtLoginManager.migrateLegacyLoginItem()
 
-        Task {
-            layout = await Task.detached(priority: .utility) { LayoutStore.load() }.value
-            refresh()
+        layout = LayoutStore.load()
+        do {
+            if let cachedApps = try AppIndexStore.load() {
+                apps = layout.reconcile(cachedApps)
+                applyCurrentSort()
+                filter(query: searchCapsule.stringValue)
+                logger.debug("Loaded \(cachedApps.count) cached applications")
+            }
+        } catch {
+            logger.warning("Could not load cached applications: \(error.localizedDescription, privacy: .public)")
         }
+        refresh()
         if !CommandLine.arguments.contains(LaunchAtLoginManager.backgroundArgument) {
             show()
         }
@@ -1487,28 +1522,39 @@ private enum AppSortOrder: Int {
         let settings = NSMenuItem(title: "设置", action: #selector(openSettings), keyEquivalent: "")
         settings.target = self
         moreMenu.addItem(settings)
+        MenuSymbols.apply("gearshape", to: settings)
         let refreshApps = NSMenuItem(title: "刷新应用", action: #selector(manualRefresh), keyEquivalent: "")
         refreshApps.target = self
         moreMenu.addItem(refreshApps)
+        MenuSymbols.apply("arrow.clockwise", to: refreshApps)
         let sort = NSMenuItem(title: "排序方式", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
-        for (title, order) in [("添加日期降序", AppSortOrder.dateDescending), ("添加日期升序", .dateAscending), ("名称", .name)] {
+        for (title, order, symbol) in [
+            ("添加日期降序", AppSortOrder.dateDescending, "calendar"),
+            ("添加日期升序", .dateAscending, "calendar"),
+            ("名称", .name, "textformat.abc")
+        ] {
             let item = NSMenuItem(title: title, action: #selector(changeSort(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = order.rawValue
             submenu.addItem(item)
+            MenuSymbols.apply(symbol, to: item)
         }
         sort.submenu = submenu
         moreMenu.addItem(sort)
+        MenuSymbols.apply("arrow.up.arrow.down", to: sort)
         moreMenu.addItem(.separator())
         let update = NSMenuItem(title: "检查更新", action: #selector(checkForUpdates), keyEquivalent: "")
         update.target = self
         moreMenu.addItem(update)
+        MenuSymbols.apply("arrow.down.circle", to: update)
         let restart = NSMenuItem(title: "重启应用", action: #selector(restartApp), keyEquivalent: "")
         restart.target = self
         moreMenu.addItem(restart)
+        MenuSymbols.apply("arrow.clockwise", to: restart)
         let quit = NSMenuItem(title: "退出应用", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         moreMenu.addItem(quit)
+        MenuSymbols.apply("power", to: quit)
     }
 
     @objc private func showMoreMenu() {
@@ -1716,13 +1762,20 @@ private enum AppSortOrder: Int {
         menu.addItem(appItem)
         let appMenu = NSMenu()
         appItem.submenu = appMenu
-        appMenu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",").target = self
-        appMenu.addItem(withTitle: "重新扫描应用", action: #selector(manualRefresh), keyEquivalent: "r").target = self
+        let settings = appMenu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        MenuSymbols.apply("gearshape", to: settings)
+        let refreshApps = appMenu.addItem(withTitle: "重新扫描应用", action: #selector(manualRefresh), keyEquivalent: "r")
+        refreshApps.target = self
+        MenuSymbols.apply("arrow.clockwise", to: refreshApps)
         #if DEBUG
-        appMenu.addItem(withTitle: "背景调试…", action: #selector(showBackgroundDebug), keyEquivalent: "d").target = self
+        let debug = appMenu.addItem(withTitle: "背景调试…", action: #selector(showBackgroundDebug), keyEquivalent: "d")
+        debug.target = self
+        MenuSymbols.apply("slider.horizontal.3", to: debug)
         #endif
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "退出 Chu Launchpad", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = appMenu.addItem(withTitle: "退出 Chu Launchpad", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        MenuSymbols.apply("power", to: quit)
         NSApp.mainMenu = menu
     }
 
@@ -1920,8 +1973,9 @@ private enum AppSortOrder: Int {
         let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main ?? NSScreen.screens[0]
         backgroundView.updateWallpaper(for: screen) { [weak self] in
             guard let self, self.showRequestGeneration == request, self.launcherTargetVisible else { return }
-            self.showPrepared(on: screen)
+            self.menuCoverImage?.image = self.backgroundView.preparedWallpaper
         }
+        showPrepared(on: screen)
     }
 
     private func menuBarHeight(on screen: NSScreen) -> CGFloat {
@@ -2085,17 +2139,8 @@ private enum AppSortOrder: Int {
         scanGeneration += 1
         let generation = scanGeneration
         Task {
-            let (result, icons) = await Task.detached(priority: .utility) {
-                let result = AppScanner.scan()
-                var icons: [String: CGImage] = [:]
-                for app in result {
-                    let image = NSWorkspace.shared.icon(forFile: app.path)
-                    var rect = CGRect(x: 0, y: 0, width: 128, height: 128)
-                    if let decoded = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) {
-                        icons[app.path] = decoded
-                    }
-                }
-                return (result, icons)
+            let result = await Task.detached(priority: .utility) {
+                AppScanner.scan()
             }.value
             guard generation == scanGeneration else { return }
             if transitionInProgress || openFolder != nil { pendingRefresh = true; return }
@@ -2108,11 +2153,33 @@ private enum AppSortOrder: Int {
                 storageQueue.async { try? LayoutStore.save(snapshot) }
                 iconCache.removeAllObjects()
             }
+            filter(query: searchCapsule.stringValue)
+            storageQueue.async { [logger] in
+                do {
+                    try AppIndexStore.save(result)
+                } catch {
+                    logger.error("Could not save cached applications: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            logger.debug("Indexed \(result.count) applications")
+
+            let icons = await Task.detached(priority: .utility) {
+                var icons: [String: CGImage] = [:]
+                for app in result {
+                    let image = NSWorkspace.shared.icon(forFile: app.path)
+                    var rect = CGRect(x: 0, y: 0, width: 128, height: 128)
+                    if let decoded = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) {
+                        icons[app.path] = decoded
+                    }
+                }
+                return icons
+            }.value
+            guard generation == scanGeneration else { return }
+            if transitionInProgress || openFolder != nil { pendingRefresh = true; return }
             for (path, image) in icons {
                 iconCache.setObject(NSImage(cgImage: image, size: NSSize(width: 128, height: 128)), forKey: path as NSString)
             }
             filter(query: searchCapsule.stringValue)
-            logger.debug("Indexed \(result.count) applications")
         }
     }
 
