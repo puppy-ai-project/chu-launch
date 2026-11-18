@@ -1684,14 +1684,22 @@ enum SettingsTab {
             statusIcon.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config)
             statusIcon.contentTintColor = .systemGreen
 
+            #if DOWNLOAD_PREVIEW
+            let doneText = "ChuImage 下载验证完成"
+            #else
             let doneText = "v\(newVersion) 下载完成，点击“重启安装”自动解压并更新"
+            #endif
             statusLabel.stringValue = doneText
             statusLabel.textColor = .labelColor
             layoutStatusLabel(statusLabel, text: doneText, centerY: 92)
 
             savedPathLabel.stringValue = "保存路径：\(fileURL.path)"
             savedPathLabel.toolTip = fileURL.path
+            #if DOWNLOAD_PREVIEW
+            layoutUpdateButtons(showCheckButton: true)
+            #else
             layoutUpdateButtons(showCheckButton: true, primaryStyle: .success, primaryTitle: "重启安装")
+            #endif
             setUpdatesCardHeight(166)
 
         case .installing(let newVersion, let fileURL):

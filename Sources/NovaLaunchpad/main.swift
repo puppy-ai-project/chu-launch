@@ -92,6 +92,7 @@ enum AnimationHelper {
     private var lastByScreen: [String: NSImage] = [:]
     private var currentKey: String?
     private var refreshTask: Task<Void, Never>?
+    private var wallpaperCanvasSize: NSSize?
 
     override init(frame: NSRect) { super.init(frame: frame); setup() }
     required init?(coder: NSCoder) { super.init(coder: coder); setup() }
@@ -104,9 +105,9 @@ enum AnimationHelper {
 
     private func setup() {
         wantsLayer = true
+        layer?.masksToBounds = true
         autoresizingMask = [.width, .height]
         wallpaperGroup.frame = bounds
-        wallpaperGroup.autoresizingMask = [.width, .height]
         wallpaperGroup.wantsLayer = true
         addSubview(wallpaperGroup)
         opaqueBase.wantsLayer = true
@@ -139,6 +140,25 @@ enum AnimationHelper {
     }
 
     var preparedWallpaper: NSImage? { usingFallback ? nil : wallpaperImageView.image }
+
+    func setWallpaperCanvasSize(_ size: NSSize) {
+        wallpaperCanvasSize = size
+        syncWallpaperGroupFrame()
+    }
+
+    override func layout() {
+        super.layout()
+        syncWallpaperGroupFrame()
+    }
+
+    private func syncWallpaperGroupFrame() {
+        let size = wallpaperCanvasSize ?? bounds.size
+        wallpaperGroup.frame = NSRect(origin: .zero, size: size)
+        let groupBounds = wallpaperGroup.bounds
+        for subview in wallpaperGroup.subviews {
+            subview.frame = groupBounds
+        }
+    }
 
     private func displayWallpaper(_ image: NSImage?) {
         if window?.isVisible == true, wallpaperImageView.image !== image,
@@ -752,7 +772,7 @@ enum AnimationHelper {
 
     func animatePageVisibility(_ visible: Bool, duration: CFTimeInterval) -> CALayer? {
         guard pageViews.indices.contains(currentPage), let layer = pageViews[currentPage].layer else { return nil }
-        let scale: CGFloat = 1.16
+        let scale: CGFloat = 1.04
         var start = CATransform3DMakeScale(scale, scale, 1)
         start.m41 = (0.5 - layer.anchorPoint.x) * layer.bounds.width * (1 - scale)
         start.m42 = (0.5 - layer.anchorPoint.y) * layer.bounds.height * (1 - scale)
@@ -763,11 +783,17 @@ enum AnimationHelper {
         zoom.fromValue = NSValue(caTransform3D: from ?? (visible ? start : resting))
         zoom.toValue = NSValue(caTransform3D: visible ? resting : start)
         zoom.duration = duration
-        zoom.timingFunction = CAMediaTimingFunction(name: visible ? .easeOut : .easeIn)
+        zoom.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         zoom.fillMode = .forwards
         zoom.isRemovedOnCompletion = visible
         layer.add(zoom, forKey: key)
         return layer
+    }
+
+    func clearPageVisibilityAnimations() {
+        for pageView in pageViews {
+            pageView.layer?.removeAnimation(forKey: "launcher.pageZoom")
+        }
     }
 
     // MARK: - 页面与应用进入动画 (Page & Apps Entrance Animation)
@@ -1308,6 +1334,7 @@ private enum AppSortOrder: Int {
 
         let screen = NSScreen.main ?? NSScreen.screens[0]
         window = LauncherWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.animationBehavior = .none
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isOpaque = false
@@ -1803,14 +1830,7 @@ private enum AppSortOrder: Int {
         let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let duration: CFTimeInterval = reduced ? 0.12 : backgroundView.style.animationDuration
         let zoomLayer = reduced ? nil : activePages.animatePageVisibility(visible, duration: duration)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            window.animator().alphaValue = visible ? 1 : 0
-            menuCover?.animator().alphaValue = visible ? 1 : 0
-        }
-        if visible { menuCover?.orderFrontRegardless() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+        let finish: @MainActor @Sendable () -> Void = { [weak self] in
             guard let self, self.transitionGeneration == generation else { return }
             self.transitionInProgress = false
             if !visible {
@@ -1823,6 +1843,15 @@ private enum AppSortOrder: Int {
             if let query = self.pendingQuery { self.pendingQuery = nil; self.filter(query: query) }
             if self.pendingRefresh { self.pendingRefresh = false; self.refresh() }
             if visible { self.scheduleBackdropWarmup() }
+        }
+        if visible { menuCover?.orderFrontRegardless() }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().alphaValue = visible ? 1 : 0
+            menuCover?.animator().alphaValue = visible ? 1 : 0
+        } completionHandler: {
+            Task { @MainActor in finish() }
         }
     }
 
@@ -1888,8 +1917,9 @@ private enum AppSortOrder: Int {
         let wasVisible = window.isVisible
         if !wasVisible {
             window.alphaValue = 0
-            window.makeKeyAndOrderFront(nil)
+            menuCover?.alphaValue = 0
             menuCover?.orderFrontRegardless()
+            window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             if openFolder == nil && settingsPanel == nil { searchCapsule.makeFirstResponder() }
         }
@@ -1903,6 +1933,7 @@ private enum AppSortOrder: Int {
         let rect = NSRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height)
         if menuCover == nil {
             let cover = NSWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false)
+            cover.animationBehavior = .none
             cover.level = .statusBar
             cover.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
             cover.ignoresMouseEvents = false
@@ -1942,7 +1973,6 @@ private enum AppSortOrder: Int {
         let hex = backgroundView.style.overlayColor.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         let rgb = UInt32(hex, radix: 16) ?? 0
         menuCoverTint?.layer?.backgroundColor = NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: backgroundView.style.overlayOpacity).cgColor
-        menuCover?.alphaValue = 0
     }
 
     @objc private func volumeChanged() { scheduleRefresh() }
