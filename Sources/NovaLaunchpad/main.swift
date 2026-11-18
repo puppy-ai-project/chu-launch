@@ -300,6 +300,10 @@ enum AnimationHelper {
 // MARK: - 单个应用图标项 (App Item View)
 @MainActor final class AppItemView: NSView {
     private let iconImageView = NSImageView()
+    var folderThumbnailFrame: CGRect {
+        let frame = iconImageView.frame
+        return frame.insetBy(dx: frame.width * 12 / 128, dy: frame.height * 12 / 128)
+    }
     private let nameLabel = NSTextField(labelWithString: "")
     private(set) var appRecord: AppRecord?
     private var onOpen: ((AppRecord, AppItemView) -> Void)?
@@ -1004,15 +1008,11 @@ struct FolderAppearance: Codable, Sendable {
         panel.addSubview(indicator)
     }
 
-    func present() {
+    private var thumbnailFrame = CGRect.zero
+
+    func present(from frame: CGRect) {
+        thumbnailFrame = frame
         state = .opening
-        let instant = CAMediaTimingFunction(name: .linear)
-        for layer in [panel.layer, title.layer, indicator.layer].compactMap({ $0 }) + pages.visibleItemLayers {
-            LauncherTransition.set(layer, keyPath: "opacity", value: Float(0), duration: 0, curve: instant)
-        }
-        if let layer = panel.layer {
-            LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: CATransform3DMakeScale(0.94, 0.94, 1)), duration: 0, curve: instant)
-        }
         // The launcher hide animation may leave this layer transparent even after
         // NSView is unhidden. Reset the model layer before accepting clicks.
         root.layer?.removeAnimation(forKey: "launcher.opacity")
@@ -1022,10 +1022,10 @@ struct FolderAppearance: Codable, Sendable {
         root.layer?.opacity = 1
         CATransaction.commit()
         root.isHidden = false
-        animate(opening: true)
+        animate(opening: true, initial: true)
     }
 
-    func animate(opening: Bool) {
+    func animate(opening: Bool, initial: Bool = false) {
         guard state != .closed else { return }
         generation += 1
         let current = generation
@@ -1036,16 +1036,42 @@ struct FolderAppearance: Codable, Sendable {
         let opacity: Float = opening ? 1 : 0
         for control in underlyingControls {
             if let layer = control.layer {
+                let scale: CGFloat = opening && !reduced ? 0.94 : 1
+                let anchor = layer.anchorPoint
+                var depth = CATransform3DMakeScale(scale, scale, 1)
+                depth.m41 = (0.5 - anchor.x) * layer.bounds.width * (1 - scale)
+                depth.m42 = (0.5 - anchor.y) * layer.bounds.height * (1 - scale)
+                if opening && !reduced { depth.m42 += control.isFlipped ? 10 : -10 }
+                LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: depth), duration: duration, curve: curve)
                 LauncherTransition.set(layer, keyPath: "opacity", value: Float(opening ? 0 : 1), duration: duration, curve: curve)
             }
         }
         if let layer = panel.layer {
-            let scale: CGFloat = opening || reduced ? 1 : 0.94
-            LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: CATransform3DMakeScale(scale, scale, 1)), duration: duration, curve: curve)
+            // Resolve the thumbnail relative to the panel's actual layer pivot.
+            let frame = panel.frame
+            let anchor = layer.anchorPoint
+            var collapsed = CATransform3DMakeScale(thumbnailFrame.width / max(1, frame.width),
+                                                   thumbnailFrame.height / max(1, frame.height), 1)
+            collapsed.m41 = thumbnailFrame.minX - frame.minX + anchor.x * (thumbnailFrame.width - frame.width)
+            collapsed.m42 = thumbnailFrame.minY - frame.minY + anchor.y * (thumbnailFrame.height - frame.height)
+            let target = opening || reduced ? CATransform3DIdentity : collapsed
+            let motion = CABasicAnimation(keyPath: "transform")
+            motion.fromValue = NSValue(caTransform3D: initial && !reduced ? collapsed : (layer.presentation()?.transform ?? CATransform3DIdentity))
+            motion.toValue = NSValue(caTransform3D: target)
+            motion.duration = duration
+            motion.timingFunction = curve
+            motion.fillMode = .forwards
+            motion.isRemovedOnCompletion = opening
+            layer.add(motion, forKey: "folder.zoom")
             LauncherTransition.set(layer, keyPath: "opacity", value: opacity, duration: duration, curve: curve)
-        }
-        for layer in pages.visibleItemLayers + [title.layer, indicator.layer].compactMap({ $0 }) {
-            LauncherTransition.set(layer, keyPath: "opacity", value: opacity, duration: duration, curve: curve)
+            if initial {
+                let fade = CABasicAnimation(keyPath: "opacity")
+                fade.fromValue = 0
+                fade.toValue = 1
+                fade.duration = duration
+                fade.timingFunction = curve
+                layer.add(fade, forKey: "launcher.opacity")
+            }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
             guard let self, current == self.generation else { return }
@@ -1061,7 +1087,10 @@ struct FolderAppearance: Codable, Sendable {
         root.alphaValue = 1
         root.layer?.removeAnimation(forKey: "launcher.opacity")
         root.layer?.opacity = 1
+        panel.layer?.removeAnimation(forKey: "folder.zoom")
         for control in underlyingControls {
+            control.layer?.removeAnimation(forKey: "launcher.transform")
+            control.layer?.transform = CATransform3DIdentity
             control.layer?.removeAnimation(forKey: "launcher.opacity")
             control.layer?.opacity = 1
         }
@@ -1663,7 +1692,7 @@ struct FolderAppearance: Codable, Sendable {
         guard let source = itemView ?? pagedContainer.findItemView(for: app) else { return }
         pagedContainer.layoutSubtreeIfNeeded()
         backdropWarmup?.cancel()
-        folderSourceRect = source.convert(source.bounds, to: folderBackdrop)
+        folderSourceRect = source.convert(source.folderThumbnailFrame, to: folderBackdrop)
         folderMainItems = displayed
         openFolder = app.name
         folderTitle.stringValue = app.name
@@ -1691,7 +1720,7 @@ struct FolderAppearance: Codable, Sendable {
         folderIndicator.wantsLayer = true
 
         folderOverlay.underlyingControls = [pagedContainer, searchCapsule, pageIndicator]
-        folderOverlay.present()
+        folderOverlay.present(from: folderSourceRect)
     }
 
     private func animateFolder(opening: Bool) {
