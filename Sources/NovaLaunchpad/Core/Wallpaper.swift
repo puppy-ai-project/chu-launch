@@ -3,8 +3,8 @@ import CoreImage
 
 // Background parameters can be overridden in Application Support/NovaLaunchpad/background.json.
 struct NovaBackgroundStyle: Codable, Sendable {
-    var blurRadius: Double = 40
-    var brightness: Double = -0.045
+    var blurRadius: Double = 28
+    var brightness: Double = -0.12
     var saturation: Double = 0.92
     var overlayColor: String = "000000"
     var overlayOpacity: Double = 0.10
@@ -55,7 +55,9 @@ enum WallpaperBlurRenderer {
         let composed = centered.composited(over: fill).cropped(to: extent)
         let radius = style.blurRadius * width / 1600
         let blurred = composed.clampedToExtent().applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius]).cropped(to: extent)
-        let adjusted = blurred.applyingFilter("CIColorControls", parameters: [kCIInputBrightnessKey: style.brightness, kCIInputSaturationKey: style.saturation])
+        // Exposure scales dark tones proportionally, preserving detail near black.
+        let adjusted = blurred.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: style.brightness * 4])
+            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: style.saturation])
             .applyingFilter("CIHueAdjust", parameters: [kCIInputAngleKey: style.hue ?? 0])
         return context.createCGImage(adjusted, from: extent)
     }

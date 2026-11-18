@@ -960,30 +960,15 @@ struct FolderAppearance: Codable, Sendable {
     let title = NSTextField(labelWithString: "")
     let pages = PagedContainerView()
     let indicator = PageIndicator()
-    private let snapshot = NSImageView()
-    private let fallback = NSVisualEffectView()
-    private let dim = NSView()
+    var underlyingControls: [NSView] = []
     private(set) var state: State = .closed
     private var generation = 0
-    private var snapshotReady = false
     var onClosed: (() -> Void)?
 
     init() {
         root.wantsLayer = true
         root.isHidden = true
         root.autoresizingMask = [.width, .height]
-        snapshot.wantsLayer = true
-        snapshot.imageScaling = .scaleAxesIndependently
-        fallback.material = .hudWindow
-        fallback.blendingMode = .withinWindow
-        fallback.state = .active
-        fallback.wantsLayer = true
-        dim.wantsLayer = true
-        dim.layer?.backgroundColor = NSColor.black.cgColor
-        for view in [fallback, snapshot, dim] as [NSView] {
-            view.autoresizingMask = [.width, .height]
-            root.addSubview(view)
-        }
         panel.wantsLayer = true
         panel.layer?.cornerRadius = appearance.cornerRadius
         panel.layer?.masksToBounds = true
@@ -1003,24 +988,10 @@ struct FolderAppearance: Codable, Sendable {
         panel.addSubview(indicator)
     }
 
-    func prepareSnapshot(from view: LauncherBackgroundView) {
-        generation += 1
+    func present() {
         state = .opening
-        snapshotReady = false
-        let image = view.preparedWallpaper?.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        finishPreparing(image, generation: generation)
-    }
-
-    private func finishPreparing(_ image: CGImage?, generation current: Int) {
-        guard current == generation, state == .opening else { return }
-        let size = root.bounds.size
-        for view in [fallback, snapshot, dim] as [NSView] { view.frame = root.bounds }
-        snapshot.image = image.map { NSImage(cgImage: $0, size: size) }
-        fallback.isHidden = image != nil
-        snapshot.isHidden = image == nil
-        snapshotReady = true
         let instant = CAMediaTimingFunction(name: .linear)
-        for layer in [snapshot.layer, fallback.layer, dim.layer, panel.layer, title.layer, indicator.layer].compactMap({ $0 }) + pages.visibleItemLayers {
+        for layer in [panel.layer, title.layer, indicator.layer].compactMap({ $0 }) + pages.visibleItemLayers {
             LauncherTransition.set(layer, keyPath: "opacity", value: Float(0), duration: 0, curve: instant)
         }
         if let layer = panel.layer {
@@ -1040,8 +1011,6 @@ struct FolderAppearance: Codable, Sendable {
 
     func animate(opening: Bool) {
         guard state != .closed else { return }
-        if !opening && !snapshotReady { reset(); onClosed?(); return }
-        guard snapshotReady else { return }
         generation += 1
         let current = generation
         state = opening ? .opening : .closing
@@ -1049,11 +1018,10 @@ struct FolderAppearance: Codable, Sendable {
         let duration = reduced ? 0.12 : (opening ? appearance.openDuration : appearance.closeDuration)
         let curve = CAMediaTimingFunction(name: opening ? .easeOut : .easeInEaseOut)
         let opacity: Float = opening ? 1 : 0
-        for layer in [snapshot.layer, fallback.layer].compactMap({ $0 }) {
-            LauncherTransition.set(layer, keyPath: "opacity", value: opacity, duration: duration, curve: curve)
-        }
-        if let layer = dim.layer {
-            LauncherTransition.set(layer, keyPath: "opacity", value: opening ? Float(appearance.backdropDimOpacity) : 0, duration: duration, curve: curve)
+        for control in underlyingControls {
+            if let layer = control.layer {
+                LauncherTransition.set(layer, keyPath: "opacity", value: Float(opening ? 0 : 1), duration: duration, curve: curve)
+            }
         }
         if let layer = panel.layer {
             let scale: CGFloat = opening || reduced ? 1 : 0.94
@@ -1073,12 +1041,14 @@ struct FolderAppearance: Codable, Sendable {
     func reset() {
         generation += 1
         state = .closed
-        snapshotReady = false
         root.isHidden = true
         root.alphaValue = 1
         root.layer?.removeAnimation(forKey: "launcher.opacity")
         root.layer?.opacity = 1
-        snapshot.image = nil
+        for control in underlyingControls {
+            control.layer?.removeAnimation(forKey: "launcher.opacity")
+            control.layer?.opacity = 1
+        }
     }
 }
 
@@ -1704,7 +1674,8 @@ struct FolderAppearance: Codable, Sendable {
         folderTitle.wantsLayer = true
         folderIndicator.wantsLayer = true
 
-        folderOverlay.prepareSnapshot(from: backgroundView)
+        folderOverlay.underlyingControls = [pagedContainer, searchCapsule, pageIndicator]
+        folderOverlay.present()
     }
 
     private func animateFolder(opening: Bool) {
