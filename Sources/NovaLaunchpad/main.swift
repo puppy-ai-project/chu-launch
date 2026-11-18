@@ -1456,6 +1456,9 @@ private enum AppSortOrder: Int {
         let settings = NSMenuItem(title: "设置", action: #selector(openSettings), keyEquivalent: "")
         settings.target = self
         moreMenu.addItem(settings)
+        let refreshApps = NSMenuItem(title: "刷新应用", action: #selector(manualRefresh), keyEquivalent: "")
+        refreshApps.target = self
+        moreMenu.addItem(refreshApps)
         let sort = NSMenuItem(title: "排序方式", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
         for (title, order) in [("添加日期降序", AppSortOrder.dateDescending), ("添加日期升序", .dateAscending), ("名称", .name)] {
