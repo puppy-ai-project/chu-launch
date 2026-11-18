@@ -12,9 +12,20 @@ struct GitHubRelease: Decodable, Sendable {
 
     var version: String { tag_name.first?.lowercased() == "v" ? String(tag_name.dropFirst()) : tag_name }
 
-    /// 优先返回 .zip 附件直链，否则回退到 html_url
+    /// Prefer the archive matching this build's architecture, then any ZIP, then the release page.
     var downloadURL: URL {
-        if let zipAsset = assets?.first(where: { $0.name.lowercased().hasSuffix(".zip") && $0.browser_download_url.scheme == "https" }) {
+        let zipAssets = assets?.filter { $0.name.lowercased().hasSuffix(".zip") && $0.browser_download_url.scheme == "https" } ?? []
+        #if arch(arm64)
+        let architectureSuffix = "mac-arm64"
+        #elseif arch(x86_64)
+        let architectureSuffix = "mac-x64"
+        #else
+        let architectureSuffix = ""
+        #endif
+        if let matchingAsset = zipAssets.first(where: { $0.name.lowercased().contains(architectureSuffix) }) {
+            return matchingAsset.browser_download_url
+        }
+        if let zipAsset = zipAssets.first {
             return zipAsset.browser_download_url
         }
         return html_url

@@ -10,7 +10,15 @@ if [ "${CHU_DEBUG:-0}" = 1 ]; then
 else
     set --
 fi
-swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/ChuLaunchpad/Core/*.swift Sources/ChuLaunchpad/Settings/*.swift Sources/ChuLaunchpad/main.swift -o "$APP/Contents/MacOS/ChuLaunchpad"
+if [ -n "${CHU_ARCH:-}" ]; then
+    case "$CHU_ARCH" in
+        arm64|x86_64) ;;
+        *) echo "CHU_ARCH must be arm64 or x86_64" >&2; exit 2 ;;
+    esac
+    swiftc "$@" -target "$CHU_ARCH-apple-macosx14.0" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/ChuLaunchpad/Core/*.swift Sources/ChuLaunchpad/Settings/*.swift Sources/ChuLaunchpad/main.swift -o "$APP/Contents/MacOS/ChuLaunchpad"
+else
+    swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/ChuLaunchpad/Core/*.swift Sources/ChuLaunchpad/Settings/*.swift Sources/ChuLaunchpad/main.swift -o "$APP/Contents/MacOS/ChuLaunchpad"
+fi
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

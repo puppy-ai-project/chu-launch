@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -24,7 +24,9 @@ jobs:
         env:
           CHU_VERSION: ${{ steps.version.outputs.version }}
           CHU_BUILD_NUMBER: ${{ github.run_number }}
-        run: sh scripts/package-release.sh build/release
+        run: |
+          CHU_ARCH=arm64 sh scripts/package-release.sh build/release
+          CHU_ARCH=x86_64 sh scripts/package-release.sh build/release
 
       - name: Publish GitHub Release
         env:
@@ -32,8 +34,11 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: >-
           gh release create "$GITHUB_REF_NAME"
-          build/release/Chu-Launchpad-"$VERSION"-mac.zip
-          build/release/Chu-Launchpad-"$VERSION"-mac.dmg
-          build/release/Chu-Launchpad-"$VERSION"-SHA256SUMS.txt
+          build/release/Chu-Launchpad-"$VERSION"-mac-arm64.zip
+          build/release/Chu-Launchpad-"$VERSION"-mac-arm64.dmg
+          build/release/Chu-Launchpad-"$VERSION"-SHA256SUMS-arm64.txt
+          build/release/Chu-Launchpad-"$VERSION"-mac-x64.zip
+          build/release/Chu-Launchpad-"$VERSION"-mac-x64.dmg
+          build/release/Chu-Launchpad-"$VERSION"-SHA256SUMS-x64.txt
           --title "Chu Launchpad $VERSION"
           --generate-notes
