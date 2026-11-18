@@ -15,8 +15,40 @@ enum LaunchAtLoginManager {
         Bundle.main.executablePath ?? ProcessInfo.processInfo.arguments.first ?? ""
     }
 
+    private static func loginItem(_ action: String) throws {
+        let outer = Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let process = Process()
+        process.executableURL = outer.appendingPathComponent("Contents/MacOS/ChuLaunchpad")
+        process.arguments = ["--login-item-" + action]
+        let errors = Pipe()
+        process.standardError = errors
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus != 0 {
+            let detail = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            throw NSError(domain: label, code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: detail])
+        }
+    }
+
+    static func isEnabled() -> Bool { (try? loginItem("status")) != nil }
+
+    static func setEnabled(_ enabled: Bool) throws {
+        try loginItem(enabled ? "enable" : "disable")
+        if FileManager.default.fileExists(atPath: defaultPlistURL.path) {
+            try FileManager.default.removeItem(at: defaultPlistURL)
+        }
+    }
+
+    static func migrateLegacyLoginItem() {
+        guard let data = try? Data(contentsOf: defaultPlistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              (plist["ProgramArguments"] as? [String])?.first == defaultExecutablePath,
+              isEnabled(plistURL: defaultPlistURL) else { return }
+        try? setEnabled(true)
+    }
+
     /// 检查开机启动是否已启用
-    static func isEnabled(plistURL: URL = defaultPlistURL) -> Bool {
+    static func isEnabled(plistURL: URL) -> Bool {
         guard FileManager.default.fileExists(atPath: plistURL.path),
               let data = try? Data(contentsOf: plistURL),
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
@@ -31,7 +63,7 @@ enum LaunchAtLoginManager {
     static func setEnabled(
         _ enabled: Bool,
         executablePath: String = defaultExecutablePath,
-        plistURL: URL = defaultPlistURL
+        plistURL: URL
     ) throws {
         let fm = FileManager.default
         if enabled {
@@ -58,7 +90,7 @@ enum LaunchAtLoginManager {
     /// 若用户移动了 .app 位置且已开启开机启动，自动静默同步新路径
     static func syncExecutablePathIfNeeded(
         executablePath: String = defaultExecutablePath,
-        plistURL: URL = defaultPlistURL
+        plistURL: URL
     ) {
         guard isEnabled(plistURL: plistURL),
               !executablePath.isEmpty,

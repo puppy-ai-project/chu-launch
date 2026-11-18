@@ -1,11 +1,34 @@
 import AppKit
+import ServiceManagement
+
+if let action = CommandLine.arguments.dropFirst().first, action.hasPrefix("--login-item-") {
+    let service = SMAppService.mainApp
+    do {
+        switch action {
+        case "--login-item-status": exit(service.status == .enabled ? 0 : 1)
+        case "--login-item-enable":
+            if service.status != .enabled { try service.register() }
+            guard service.status == .enabled else {
+                FileHandle.standardError.write(Data("请在系统设置的登录项中批准 Chu Launchpad。".utf8))
+                exit(1)
+            }
+        case "--login-item-disable":
+            if service.status != .notRegistered { try service.unregister() }
+        default: exit(2)
+        }
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data(error.localizedDescription.utf8))
+        exit(1)
+    }
+}
 
 @MainActor
 final class EntryDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let agent = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/ChuLaunchAgent.app")
         let configuration = NSWorkspace.OpenConfiguration()
-        let background = CommandLine.arguments.contains("--background")
+        let background = CommandLine.arguments.contains("--background") || NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
         configuration.activates = false
         configuration.arguments = background ? ["--background"] : []
         NSWorkspace.shared.openApplication(at: agent, configuration: configuration) { _, error in

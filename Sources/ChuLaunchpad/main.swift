@@ -1472,7 +1472,7 @@ private enum AppSortOrder: Int {
         if case .conflict(let key, let code) = hotKeyStatus {
             logger.warning("Failed to register hotkey \(key.displayString, privacy: .public), status=\(code)")
         }
-        LaunchAtLoginManager.syncExecutablePathIfNeeded()
+        LaunchAtLoginManager.migrateLegacyLoginItem()
 
         Task {
             layout = await Task.detached(priority: .utility) { LayoutStore.load() }.value
@@ -1564,6 +1564,7 @@ private enum AppSortOrder: Int {
     private func openSettingsPanel(initialTab: SettingsTab) {
         if let existing = settingsPanel {
             existing.selectTab(initialTab)
+            existing.setLaunchAtLogin(enabled: LaunchAtLoginManager.isEnabled())
             window.makeFirstResponder(nil)
             return
         }
@@ -1598,7 +1599,7 @@ private enum AppSortOrder: Int {
         panel.onLaunchAtLoginChanged = { [weak self] enabled in
             do {
                 try LaunchAtLoginManager.setEnabled(enabled)
-                self?.settingsPanel?.setLaunchAtLogin(enabled: enabled)
+                self?.settingsPanel?.setLaunchAtLogin(enabled: LaunchAtLoginManager.isEnabled())
             } catch {
                 self?.settingsPanel?.setLaunchAtLogin(enabled: LaunchAtLoginManager.isEnabled(), errorMessage: error.localizedDescription)
             }
@@ -1856,6 +1857,10 @@ private enum AppSortOrder: Int {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if launcherTargetVisible { hide() } else { show() }
         return true
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        settingsPanel?.setLaunchAtLogin(enabled: LaunchAtLoginManager.isEnabled())
     }
 
     func applicationDidResignActive(_ notification: Notification) {
