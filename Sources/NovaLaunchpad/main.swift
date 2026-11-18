@@ -1,6 +1,7 @@
 import AppKit
 import CoreImage
 import OSLog
+import Quartz
 import QuartzCore
 
 #if DEBUG
@@ -139,9 +140,6 @@ enum AnimationHelper {
 
     var preparedWallpaper: NSImage? { usingFallback ? nil : wallpaperImageView.image }
 
-    var transitionLayers: [CALayer] { [wallpaperGroup.layer].compactMap { $0 } }
-    func targetOpacity(for layer: CALayer) -> Float { 1 }
-
     private func displayWallpaper(_ image: NSImage?) {
         if window?.isVisible == true, wallpaperImageView.image !== image,
            !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let layer = wallpaperImageView.layer {
@@ -211,7 +209,38 @@ enum AnimationHelper {
 }
 
 // MARK: - 全屏启动器窗口
-@MainActor final class LauncherWindow: NSWindow {
+@MainActor final class LauncherWindow: NSWindow, @MainActor QLPreviewPanelDataSource {
+    private var previewURL: NSURL?
+
+    func previewApplication(at url: URL) {
+        previewURL = url as NSURL
+        guard let panel = QLPreviewPanel.shared() else { return }
+        panel.updateController()
+        panel.level = NSWindow.Level(rawValue: level.rawValue + 1)
+        panel.reloadData()
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        MainActor.assumeIsolated { previewURL != nil }
+    }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated { panel.dataSource = self }
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated { panel.dataSource = nil }
+    }
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        previewURL == nil ? 0 : 1
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
+        previewURL
+    }
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
@@ -366,6 +395,45 @@ enum AnimationHelper {
         iconImageView.image = icon
     }
 
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let appRecord, !appRecord.path.hasPrefix("nova-folder:") else { return nil }
+        let menu = NSMenu()
+        for (title, action) in [("打开", #selector(openFromMenu)), ("在访达中显示", #selector(revealFromMenu)),
+                                ("显示简介", #selector(showInfo)), ("快速查看", #selector(previewAppFromMenu)),
+                                ("共享…", #selector(shareApp))] {
+            menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
+        }
+        return menu
+    }
+
+    @objc private func openFromMenu() {
+        if let appRecord { onOpen?(appRecord, self) }
+    }
+
+    @objc private func revealFromMenu() {
+        guard let appRecord else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: appRecord.path)])
+    }
+
+    @objc private func showInfo() {
+        guard let appRecord else { return }
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setPropertyList([appRecord.path], forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
+        if !NSPerformService("Finder/Show Info", pasteboard) { NSSound.beep() }
+    }
+
+    @objc private func previewAppFromMenu() {
+        guard let appRecord, let launcher = window as? LauncherWindow else { return }
+        launcher.previewApplication(at: URL(fileURLWithPath: appRecord.path))
+    }
+
+    @objc private func shareApp() {
+        guard let appRecord else { return }
+        let picker = NSSharingServicePicker(items: [URL(fileURLWithPath: appRecord.path)])
+        picker.show(relativeTo: iconImageView.bounds, of: iconImageView, preferredEdge: .maxX)
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         let icon = iconImageView.frame.insetBy(dx: -2, dy: -2)
@@ -376,6 +444,10 @@ enum AnimationHelper {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control), let menu = menu(for: event) {
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+            return
+        }
         isPressed = true
         animatePress(down: true)
     }
@@ -660,6 +732,26 @@ enum AnimationHelper {
     var visibleItemLayers: [CALayer] {
         guard pageViews.indices.contains(currentPage) else { return [] }
         return pageViews[currentPage].transitionLayers
+    }
+
+    func animatePageVisibility(_ visible: Bool, duration: CFTimeInterval) -> CALayer? {
+        guard pageViews.indices.contains(currentPage), let layer = pageViews[currentPage].layer else { return nil }
+        let scale: CGFloat = 1.16
+        var start = CATransform3DMakeScale(scale, scale, 1)
+        start.m41 = (0.5 - layer.anchorPoint.x) * layer.bounds.width * (1 - scale)
+        start.m42 = (0.5 - layer.anchorPoint.y) * layer.bounds.height * (1 - scale)
+        let zoom = CABasicAnimation(keyPath: "transform")
+        let key = "launcher.pageZoom"
+        let resting = CATransform3DIdentity
+        let from = layer.animation(forKey: key) == nil ? nil : layer.presentation()?.transform
+        zoom.fromValue = NSValue(caTransform3D: from ?? (visible ? start : resting))
+        zoom.toValue = NSValue(caTransform3D: visible ? resting : start)
+        zoom.duration = duration
+        zoom.timingFunction = CAMediaTimingFunction(name: visible ? .easeOut : .easeIn)
+        zoom.fillMode = .forwards
+        zoom.isRemovedOnCompletion = visible
+        layer.add(zoom, forKey: key)
+        return layer
     }
 
     // MARK: - 页面与应用进入动画 (Page & Apps Entrance Animation)
@@ -1312,7 +1404,7 @@ struct FolderAppearance: Codable, Sendable {
         }
         // 键盘监控
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.window.isVisible, !self.isLaunching else { return event }
+            guard let self, self.window.isVisible, self.window.attachedSheet == nil, event.window === self.window, !self.isLaunching else { return event }
 
             // Esc 键
             if event.keyCode == 53 {
@@ -1401,46 +1493,22 @@ struct FolderAppearance: Codable, Sendable {
         launcherTargetVisible = visible
         transitionInProgress = true
         let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let duration: CFTimeInterval = reduced ? 0.12 : backgroundView.style.animationDuration * (visible ? 1 : 5.0 / 6.0)
-        let curve = CAMediaTimingFunction(controlPoints: visible ? 0.18 : 0.4, visible ? 0.8 : 0.0, 0.3, 1.0)
-        let opacity: Float = visible ? 1 : 0
-        if let cover = menuCover {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = duration
-                context.timingFunction = curve
-                cover.animator().alphaValue = visible ? 1 : 0
-            }
-        }
-        for layer in backgroundView.transitionLayers {
-            LauncherTransition.set(layer, keyPath: "opacity", value: visible ? backgroundView.targetOpacity(for: layer) : 0, duration: duration, curve: curve)
-        }
-        for layer in pagedContainer.visibleItemLayers {
-            LauncherTransition.set(layer, keyPath: "opacity", value: opacity, duration: duration, curve: curve)
-            let scale: CGFloat = visible || reduced ? 1 : 1.08
-            LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: CATransform3DMakeScale(scale, scale, 1)), duration: duration, curve: curve)
-        }
-        for layer in [searchCapsule.layer, pageIndicator.layer].compactMap({ $0 }) {
-            LauncherTransition.set(layer, keyPath: "opacity", value: opacity, duration: duration, curve: curve)
-        }
-        if !folderBackdrop.isHidden, let layer = folderBackdrop.layer {
-            LauncherTransition.set(layer, keyPath: "opacity", value: opacity, duration: duration, curve: curve)
+        let duration: CFTimeInterval = reduced ? 0.12 : backgroundView.style.animationDuration
+        let zoomLayer = reduced ? nil : activePages.animatePageVisibility(visible, duration: duration)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().alphaValue = visible ? 1 : 0
+            menuCover?.animator().alphaValue = visible ? 1 : 0
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
             guard let self, self.transitionGeneration == generation else { return }
             self.transitionInProgress = false
             if !visible {
                 self.window.orderOut(nil)
+                zoomLayer?.removeAnimation(forKey: "launcher.pageZoom")
                 self.menuCover?.orderOut(nil)
                 self.isLaunching = false
-                if self.openFolder != nil {
-                    self.resetFolderLayers()
-                    self.openFolder = nil
-                    self.folderBackdrop.isHidden = true
-                    self.folderBackdrop.alphaValue = 1
-                    self.folderPanel.layer?.removeAllAnimations()
-                    self.folderPanel.layer?.transform = CATransform3DIdentity
-                    self.filter(query: self.searchCapsule.stringValue)
-                }
             }
             completion?()
             if let query = self.pendingQuery { self.pendingQuery = nil; self.filter(query: query) }
@@ -1499,12 +1567,7 @@ struct FolderAppearance: Codable, Sendable {
         let gridHeight = max(100, gridTopY - gridBottomY)
         pagedContainer.frame = NSRect(x: 0, y: gridBottomY, width: screenWidth, height: gridHeight)
 
-        let panelWidth = min(screenWidth - 80, 1140)
-        let panelHeight = min(screenHeight - 100, 730)
-        folderPanel.frame = NSRect(x: (screenWidth - panelWidth) / 2, y: (screenHeight - panelHeight) / 2, width: panelWidth, height: panelHeight)
-        folderTitle.frame = NSRect(x: 0, y: panelHeight - 65, width: panelWidth, height: 30)
-        folderPages.frame = NSRect(x: 20, y: 45, width: panelWidth - 40, height: panelHeight - 125)
-        folderIndicator.frame = NSRect(x: (panelWidth - 200) / 2, y: 12, width: 200, height: 20)
+        layoutFolderPanel()
         pagedContainer.layoutSubtreeIfNeeded()
         pagedContainer.resetAllItemAnimations()
         isLaunching = false
@@ -1513,20 +1576,11 @@ struct FolderAppearance: Codable, Sendable {
         pageIndicator.wantsLayer = true
         let wasVisible = window.isVisible
         if !wasVisible {
-            let instant = CAMediaTimingFunction(name: .linear)
-            for layer in backgroundView.transitionLayers + pagedContainer.visibleItemLayers + [searchCapsule.layer, pageIndicator.layer].compactMap({ $0 }) {
-                LauncherTransition.set(layer, keyPath: "opacity", value: Float(0), duration: 0, curve: instant)
-            }
-            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                for layer in pagedContainer.visibleItemLayers {
-                    LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: CATransform3DMakeScale(1.08, 1.08, 1)), duration: 0, curve: instant)
-                }
-            }
-            window.alphaValue = 1
+            window.alphaValue = 0
             window.makeKeyAndOrderFront(nil)
             menuCover?.orderFrontRegardless()
             NSApp.activate(ignoringOtherApps: true)
-            searchCapsule.makeFirstResponder()
+            if openFolder == nil { searchCapsule.makeFirstResponder() }
         }
         transition(visible: true)
     }
@@ -1704,15 +1758,7 @@ struct FolderAppearance: Codable, Sendable {
         folderTitle.stringValue = app.name
         displayed = contents
 
-        // Determine the destination before exposing the panel. Coordinates here are
-        // in the unflipped backdrop; the source view can belong to any page.
-        let available = folderBackdrop.bounds.insetBy(dx: 36, dy: 40)
-        let width = max(1, min(available.width, 1140))
-        let height = max(1, min(available.height, min(680, available.height * 0.72)))
-        folderPanel.frame = NSRect(x: available.midX - width / 2, y: available.midY - height / 2, width: width, height: height)
-        folderTitle.frame = NSRect(x: 0, y: height - 60, width: width, height: 30)
-        folderPages.frame = NSRect(x: 20, y: 42, width: width - 40, height: max(1, height - 115))
-        folderIndicator.frame = NSRect(x: (width - 200) / 2, y: 10, width: 200, height: 20)
+        layoutFolderPanel()
         if loadedFolderItems != contents {
             folderPages.reloadPages(apps: contents, folders: [:], iconCache: iconCache)
             loadedFolderItems = contents
@@ -1733,8 +1779,14 @@ struct FolderAppearance: Codable, Sendable {
         folderOverlay.animate(opening: opening)
     }
 
-    private func resetFolderLayers() {
-        folderOverlay.reset()
+    private func layoutFolderPanel() {
+        let available = folderBackdrop.bounds.insetBy(dx: 36, dy: 40)
+        let width = max(1, min(available.width, 1140))
+        let height = max(1, min(available.height, min(680, available.height * 0.72)))
+        folderPanel.frame = NSRect(x: available.midX - width / 2, y: available.midY - height / 2, width: width, height: height)
+        folderTitle.frame = NSRect(x: 0, y: height - 60, width: width, height: 30)
+        folderPages.frame = NSRect(x: 20, y: 42, width: width - 40, height: max(1, height - 115))
+        folderIndicator.frame = NSRect(x: (width - 200) / 2, y: 10, width: 200, height: 20)
     }
 
     private func closeFolder() {
@@ -1755,15 +1807,6 @@ struct FolderAppearance: Codable, Sendable {
             self.menuCover?.orderOut(nil)
             self.window.alphaValue = 1.0
             targetItemView?.resetLaunchAnimation()
-            if self.openFolder != nil {
-                self.resetFolderLayers()
-                self.openFolder = nil
-                self.folderBackdrop.isHidden = true
-                self.folderBackdrop.alphaValue = 1.0
-                self.folderPanel.layer?.removeAllAnimations()
-                self.folderPanel.layer?.transform = CATransform3DIdentity
-                self.filter(query: self.searchCapsule.stringValue)
-            }
             self.isLaunching = false
         }
 
