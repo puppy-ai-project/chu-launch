@@ -1277,6 +1277,35 @@ private enum AppSortOrder: Int {
     private var menuCoverImage: NSImageView?
     private var menuCoverTint: NSView?
     private var menuSettingsShade: NSView?
+    private let runningVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+    private var observedReplacement: String?
+
+    private func checkInstalledVersion() {
+        let agent = Bundle.main.bundleURL
+        guard agent.lastPathComponent == "ChuLaunchAgent.app" else { return }
+        let outer = agent.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        func installedVersion(_ bundle: URL, identifier: String) -> String? {
+            guard let data = try? Data(contentsOf: bundle.appendingPathComponent("Contents/Info.plist")),
+                  let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+                  plist["CFBundleIdentifier"] as? String == identifier,
+                  let executable = plist["CFBundleExecutable"] as? String,
+                  FileManager.default.isExecutableFile(atPath: bundle.appendingPathComponent("Contents/MacOS/" + executable).path)
+            else { return nil }
+            return plist["CFBundleShortVersionString"] as? String
+        }
+        guard let version = installedVersion(outer, identifier: "com.withqq.chu-launchpad"),
+              version != runningVersion,
+              installedVersion(agent, identifier: "com.withqq.chu-launchpad.agent") == version
+        else { observedReplacement = nil; return }
+        // Allow Finder to finish copying the bundle before reopening it.
+        if observedReplacement == version {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            task.arguments = ["-n", agent.path] + (launcherTargetVisible ? [] : ["--args", "--background"])
+            do { try task.run(); NSApp.terminate(nil) } catch { observedReplacement = nil }
+        } else { observedReplacement = version }
+    }
+
     private var wallpaperTimer: Timer?
     #if DEBUG
     private var backgroundDebugPanel: BackgroundDebugPanel?
@@ -1428,7 +1457,7 @@ private enum AppSortOrder: Int {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(spaceChanged), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         wallpaperTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshVisibleWallpaper() }
+            Task { @MainActor in self?.checkInstalledVersion(); self?.refreshVisibleWallpaper() }
         }
 
         // 注册全局呼出快捷键（默认 Command + F3）与开机自启路径同步
