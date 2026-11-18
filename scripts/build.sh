@@ -3,7 +3,12 @@ set -eu
 cd "$(dirname "$0")/.."
 APP="${1:-build/Nova Launchpad.app}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/NovaLaunchpad/Core/*.swift Sources/NovaLaunchpad/main.swift -o "$APP/Contents/MacOS/NovaLaunchpad"
+if [ "${NOVA_DEBUG:-0}" = 1 ]; then
+    set -- -D DEBUG
+else
+    set --
+fi
+swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/NovaLaunchpad/Core/*.swift Sources/NovaLaunchpad/main.swift -o "$APP/Contents/MacOS/NovaLaunchpad"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

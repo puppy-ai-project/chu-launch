@@ -3,45 +3,48 @@ import CoreImage
 import OSLog
 import QuartzCore
 
-// Background parameters can be overridden in Application Support/NovaLaunchpad/background.json.
-struct NovaBackgroundStyle: Codable, Sendable {
-    var blurRadius: Double = 48
-    var brightness: Double = -0.04
-    var saturation: Double = 0.86
-    var overlayColor: String = "182338"
-    var overlayOpacity: Double = 0.06
-    var tintColor: String = "ffffff"
-    var animationDuration: Double = 0.30
-
-    static func load() -> NovaBackgroundStyle {
-        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NovaLaunchpad/background.json")
-        guard let data = try? Data(contentsOf: url), let style = try? JSONDecoder().decode(NovaBackgroundStyle.self, from: data),
-              (0...150).contains(style.blurRadius), (-1...1).contains(style.brightness),
-              (0...2).contains(style.saturation), (0...1).contains(style.overlayOpacity),
-              (0.05...2).contains(style.animationDuration) else { return NovaBackgroundStyle() }
-        return style
+#if DEBUG
+@MainActor final class BackgroundDebugPanel: NSWindowController {
+    private var style: NovaBackgroundStyle
+    private let onChange: (NovaBackgroundStyle) -> Void
+    init(style: NovaBackgroundStyle, onChange: @escaping (NovaBackgroundStyle) -> Void) {
+        self.style = style
+        self.onChange = onChange
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 260), styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
+        panel.title = "背景调试"
+        panel.level = .init(rawValue: NSWindow.Level.floating.rawValue + 1)
+        panel.center()
+        super.init(window: panel)
+        let fields: [(String, Double, Double, Double)] = [
+            ("模糊半径", 0, 150, style.blurRadius), ("亮度", -0.5, 0.5, style.brightness),
+            ("饱和度", 0, 2, style.saturation), ("色调", -3.14, 3.14, style.hue ?? 0),
+            ("背景遮罩透明度", 0, 1, style.overlayOpacity)
+        ]
+        for (index, field) in fields.enumerated() {
+            let y = 211 - CGFloat(index) * 42
+            let label = NSTextField(labelWithString: field.0)
+            label.frame = NSRect(x: 16, y: y, width: 130, height: 24)
+            panel.contentView?.addSubview(label)
+            let slider = NSSlider(value: field.3, minValue: field.1, maxValue: field.2, target: self, action: #selector(changed(_:)))
+            slider.frame = NSRect(x: 155, y: y, width: 205, height: 24)
+            slider.tag = index
+            panel.contentView?.addSubview(slider)
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func changed(_ sender: NSSlider) {
+        switch sender.tag {
+        case 0: style.blurRadius = sender.doubleValue
+        case 1: style.brightness = sender.doubleValue
+        case 2: style.saturation = sender.doubleValue
+        case 3: style.hue = sender.doubleValue
+        case 4: style.overlayOpacity = sender.doubleValue
+        default: return
+        }
+        onChange(style)
     }
 }
-
-// CIContext is thread-safe and reused for all background renders.
-enum WallpaperBlurRenderer {
-    static let context = CIContext(options: [.useSoftwareRenderer: false])
-    static func generate(url: URL, screenSize: CGSize, style: NovaBackgroundStyle) -> CGImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-        let width: CGFloat = 1600
-        let height = width * screenSize.height / max(1, screenSize.width)
-        let input = CIImage(cgImage: cgImage)
-        let scale = max(width / input.extent.width, height / input.extent.height)
-        let scaled = input.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let crop = CGRect(x: max(0, (scaled.extent.width - width) / 2), y: max(0, (scaled.extent.height - height) / 2), width: width, height: height)
-        let centered = scaled.cropped(to: crop).transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
-        let extent = CGRect(x: 0, y: 0, width: width, height: height)
-        let blurred = centered.clampedToExtent().applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: style.blurRadius]).cropped(to: extent)
-        let adjusted = blurred.applyingFilter("CIColorControls", parameters: [kCIInputBrightnessKey: style.brightness, kCIInputSaturationKey: style.saturation])
-        return context.createCGImage(adjusted, from: extent)
-    }
-}
+#endif
 
 // MARK: - 动画变换工具 (Animation Transform Helper)
 enum AnimationHelper {
@@ -75,14 +78,19 @@ enum AnimationHelper {
 
 // The translucent window reveals the real desktop while the prepared blur fades in.
 @MainActor final class LauncherBackgroundView: NSView {
-    let style = NovaBackgroundStyle.load()
+    private(set) var style = NovaBackgroundStyle.load()
+    private let wallpaperGroup = NSView()
     private let wallpaperImageView = NSImageView()
+    private let opaqueBase = NSView()
     private let fallbackView = NSVisualEffectView()
     private let overlay = NSView()
     private let tint = NSView()
     private var cache: [String: NSImage] = [:]
     private var wallpaperGeneration = 0
     private var usingFallback = false
+    private var lastByScreen: [String: NSImage] = [:]
+    private var currentKey: String?
+    private var refreshTask: Task<Void, Never>?
 
     override init(frame: NSRect) { super.init(frame: frame); setup() }
     required init?(coder: NSCoder) { super.init(coder: coder); setup() }
@@ -96,6 +104,12 @@ enum AnimationHelper {
     private func setup() {
         wantsLayer = true
         autoresizingMask = [.width, .height]
+        wallpaperGroup.frame = bounds
+        wallpaperGroup.autoresizingMask = [.width, .height]
+        wallpaperGroup.wantsLayer = true
+        addSubview(wallpaperGroup)
+        opaqueBase.wantsLayer = true
+        opaqueBase.layer?.backgroundColor = NSColor(white: 0.18, alpha: 1).cgColor
         wallpaperImageView.wantsLayer = true
         wallpaperImageView.imageScaling = .scaleAxesIndependently
         fallbackView.material = .fullScreenUI
@@ -107,56 +121,93 @@ enum AnimationHelper {
         tint.wantsLayer = true
         // A neutral white tint adds no cast; non-white values give a subtle color wash.
         tint.layer?.backgroundColor = color(style.tintColor).cgColor
-        for view in [fallbackView, wallpaperImageView, overlay, tint] as [NSView] {
+        for view in [opaqueBase, fallbackView, wallpaperImageView, overlay, tint] as [NSView] {
             view.frame = bounds
             view.autoresizingMask = [.width, .height]
-            addSubview(view)
+            wallpaperGroup.addSubview(view)
         }
+        applyStyle()
     }
 
-    var transitionLayers: [CALayer] {
-        [wallpaperImageView.layer, fallbackView.layer, overlay.layer, tint.layer].compactMap { $0 }
+    private func applyStyle() {
+        overlay.layer?.opacity = Float(style.overlayOpacity)
+        overlay.layer?.backgroundColor = color(style.overlayColor).cgColor
+        tint.layer?.backgroundColor = color(style.tintColor).cgColor
+        tint.layer?.opacity = style.tintColor.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "#")) == "ffffff" ? 0 : 0.06
+        fallbackView.layer?.opacity = 0
     }
-    func targetOpacity(for layer: CALayer) -> Float {
-        if layer === wallpaperImageView.layer { return usingFallback ? 0 : 1 }
-        if layer === fallbackView.layer { return usingFallback ? 1 : 0 }
-        if layer === overlay.layer { return Float(style.overlayOpacity) }
-        if layer === tint.layer { return style.tintColor.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "#")) == "ffffff" ? 0 : 0.06 }
-        return 1
+
+    var preparedWallpaper: NSImage? { usingFallback ? nil : wallpaperImageView.image }
+
+    var transitionLayers: [CALayer] { [wallpaperGroup.layer].compactMap { $0 } }
+    func targetOpacity(for layer: CALayer) -> Float { 1 }
+
+    private func displayWallpaper(_ image: NSImage?) {
+        if window?.isVisible == true, wallpaperImageView.image !== image,
+           !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let layer = wallpaperImageView.layer {
+            let fade = CATransition()
+            fade.type = .fade
+            fade.duration = 0.25
+            layer.add(fade, forKey: "wallpaperChange")
+        }
+        wallpaperImageView.image = image
+        usingFallback = image == nil
+        wallpaperImageView.isHidden = usingFallback
+    }
+
+    func setStyle(_ value: NovaBackgroundStyle) {
+        style = value
+        applyStyle()
+        cache.removeAll()
+        currentKey = nil
     }
 
     func updateWallpaper(for screen: NSScreen, completion: (@MainActor () -> Void)? = nil) {
         wallpaperGeneration += 1
         let generation = wallpaperGeneration
+        let screenID = String(describing: screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] ?? screen.localizedName)
         guard let url = NSWorkspace.shared.desktopImageURL(for: screen) else {
-            usingFallback = true; wallpaperImageView.image = nil; completion?(); return
+            currentKey = nil
+            displayWallpaper(lastByScreen[screenID])
+            completion?(); return
         }
         let size = screen.frame.size
         let scale = screen.backingScaleFactor
-        let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]))
-        let key = "\(url.path)|\(size.width)x\(size.height)@\(scale)|\(modified?.contentModificationDate?.timeIntervalSince1970 ?? 0)|\(modified?.fileSize ?? 0)"
-        if let image = cache[key] {
-            usingFallback = false; wallpaperImageView.image = image; completion?(); return
-        }
+        let options = NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:]
+        let fill = (options[.fillColor] as? NSColor)?.usingColorSpace(.sRGB) ?? NSColor(white: 0.18, alpha: 1).usingColorSpace(.sRGB)!
+        let placement = WallpaperPlacement(scaling: (options[.imageScaling] as? NSNumber)?.uintValue ?? NSImageScaling.scaleProportionallyUpOrDown.rawValue, clip: (options[.allowClipping] as? NSNumber)?.boolValue ?? false, red: fill.redComponent, green: fill.greenComponent, blue: fill.blueComponent)
         let style = self.style
-        Task {
-            let image = await Task.detached(priority: .utility) {
-                WallpaperBlurRenderer.generate(url: url, screenSize: size, style: style)
+        refreshTask?.cancel()
+        refreshTask = Task {
+            let key = await Task.detached(priority: .utility) { () -> String in
+                let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                return "\(url.path)|\(size.width)x\(size.height)@\(scale)|\(modified?.contentModificationDate?.timeIntervalSince1970 ?? 0)|\(modified?.fileSize ?? 0)|\(placement.scaling)|\(placement.clip)|\(placement.red),\(placement.green),\(placement.blue)|\(style.blurRadius),\(style.brightness),\(style.saturation),\(style.hue ?? 0)"
             }.value
-            guard generation == wallpaperGeneration else { return }
+            guard !Task.isCancelled, generation == wallpaperGeneration else { return }
+            if key == currentKey { completion?(); return }
+            if let image = cache[key] {
+                currentKey = key; displayWallpaper(image)
+                lastByScreen[screenID] = image; completion?(); return
+            }
+            let image = await Task.detached(priority: .utility) {
+                WallpaperBlurRenderer.generate(url: url, screenSize: size, scaleFactor: scale, placement: placement, style: style)
+            }.value
+            guard !Task.isCancelled, generation == wallpaperGeneration else { return }
             if let image {
                 let result = NSImage(cgImage: image, size: size)
                 if cache.count >= 4 { cache.removeAll() }
                 cache[key] = result
-                wallpaperImageView.image = result
-                usingFallback = false
+                lastByScreen[screenID] = result
+                currentKey = key
+                displayWallpaper(result)
             } else {
-                wallpaperImageView.image = nil
-                usingFallback = true
+                displayWallpaper(lastByScreen[screenID])
+                currentKey = nil
             }
             completion?()
         }
     }
+
 }
 
 // MARK: - 全屏启动器窗口
@@ -304,6 +355,15 @@ enum AnimationHelper {
         iconImageView.image = icon
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        let icon = iconImageView.frame.insetBy(dx: -2, dy: -2)
+        let labelWidth = min(nameLabel.frame.width, ceil(nameLabel.intrinsicContentSize.width) + 8)
+        let label = NSRect(x: nameLabel.frame.midX - labelWidth / 2, y: nameLabel.frame.minY, width: labelWidth, height: nameLabel.frame.height)
+        guard icon.contains(local) || label.contains(local) else { return nil }
+        return self
+    }
+
     override func mouseDown(with event: NSEvent) {
         isPressed = true
         animatePress(down: true)
@@ -317,6 +377,12 @@ enum AnimationHelper {
         if bounds.contains(point), let appRecord {
             onOpen?(appRecord, self)
         }
+    }
+
+    func cancelPress() {
+        guard isPressed else { return }
+        isPressed = false
+        animatePress(down: false)
     }
 
     private func animatePress(down: Bool) {
@@ -381,6 +447,9 @@ enum AnimationHelper {
     var columns = 7
     var rows = 5
     var onBlankAreaClicked: (() -> Void)?
+    var onBlankDragStart: ((NSEvent) -> Void)?
+    var onBlankDragMove: ((NSEvent) -> Void)?
+    var onBlankDragEnd: ((NSEvent) -> Void)?
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
@@ -480,15 +549,8 @@ enum AnimationHelper {
         }
     }
 
-    override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        let hitItem = itemViews.first { $0.frame.contains(point) }
-        if hitItem == nil {
-            onBlankAreaClicked?()
-        } else {
-            super.mouseDown(with: event)
-        }
-    }
+
+
 }
 
 // MARK: - 多页横向全屏平移容器 (Paged Container View)
@@ -511,6 +573,9 @@ enum AnimationHelper {
     private var dragStartOriginX: CGFloat = 0
     private var accumulatedDeltaX: CGFloat = 0
     private var isAnimating = false
+    private var animationGeneration = 0
+    private var mouseStartX: CGFloat = 0
+    private var mouseHasDragged = false
 
     override var isFlipped: Bool { true }
 
@@ -557,9 +622,9 @@ enum AnimationHelper {
             pageView.populate(apps: pageApps, folders: folders, iconCache: iconCache) { [weak self] app, itemView in
                 self?.onOpenApp?(app, itemView)
             }
-            pageView.onBlankAreaClicked = { [weak self] in
-                self?.onBlankAreaClicked?()
-            }
+            pageView.onBlankDragStart = { [weak self] event in self?.beginMouseDrag(event) }
+            pageView.onBlankDragMove = { [weak self] event in self?.moveMouseDrag(event) }
+            pageView.onBlankDragEnd = { [weak self] event in self?.endMouseDrag(event) }
             pagesTrackView.addSubview(pageView)
             pageViews.append(pageView)
         }
@@ -642,25 +707,40 @@ enum AnimationHelper {
         let targetX = -CGFloat(index) * screenWidth
 
         if !animated || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            animationGeneration += 1
+            pagesTrackView.layer?.removeAnimation(forKey: "pageScroll")
+            isAnimating = false
             pagesTrackView.frame.origin.x = targetX
             currentPage = index
             onPageChanged?(currentPage)
             return
         }
 
+        guard let layer = pagesTrackView.layer else {
+            pagesTrackView.frame.origin.x = targetX
+            currentPage = index
+            onPageChanged?(currentPage)
+            return
+        }
+        let startingPosition = layer.presentation()?.position ?? layer.position
+        animationGeneration += 1
+        let generation = animationGeneration
         isAnimating = true
         currentPage = index
         onPageChanged?(currentPage)
-
-        NSAnimationContext.runAnimationGroup { context in
-            // Launchpad 原生平滑阻尼过渡曲线
-            context.duration = 0.35
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1.0)
-            pagesTrackView.animator().frame.origin.x = targetX
-        } completionHandler: { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.isAnimating = false
-            }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pagesTrackView.frame.origin.x = targetX
+        CATransaction.commit()
+        let animation = CABasicAnimation(keyPath: "position")
+        animation.fromValue = NSValue(point: startingPosition)
+        animation.toValue = NSValue(point: layer.position)
+        animation.duration = 0.35
+        animation.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1.0)
+        layer.add(animation, forKey: "pageScroll")
+        DispatchQueue.main.asyncAfter(deadline: .now() + animation.duration) { [weak self] in
+            guard let self, self.animationGeneration == generation else { return }
+            self.isAnimating = false
         }
     }
 
@@ -674,6 +754,39 @@ enum AnimationHelper {
         if currentPage > 0 {
             scrollToPage(currentPage - 1, animated: true)
         }
+    }
+
+    func beginMouseDrag(_ event: NSEvent) {
+        if let layer = pagesTrackView.layer, let position = layer.presentation()?.position, isAnimating {
+            animationGeneration += 1
+            layer.removeAnimation(forKey: "pageScroll")
+            pagesTrackView.frame.origin.x = position.x - layer.bounds.width * layer.anchorPoint.x
+        }
+        isAnimating = false
+        isDragging = true
+        mouseHasDragged = true
+        mouseStartX = event.locationInWindow.x
+        dragStartOriginX = pagesTrackView.frame.origin.x
+    }
+
+    func moveMouseDrag(_ event: NSEvent) {
+        guard isDragging else { return }
+        let delta = event.locationInWindow.x - mouseStartX
+        if abs(delta) > 4 { mouseHasDragged = true }
+        guard mouseHasDragged else { return }
+        let proposed = dragStartOriginX + delta
+        let minimum = -CGFloat(pageCount - 1) * bounds.width
+        let position = proposed > 0 ? proposed * 0.28 : (proposed < minimum ? minimum + (proposed - minimum) * 0.28 : proposed)
+        pagesTrackView.frame.origin.x = position
+    }
+
+    func endMouseDrag(_ event: NSEvent) {
+        guard isDragging else { return }
+        isDragging = false
+        let delta = event.locationInWindow.x - mouseStartX
+        if !mouseHasDragged { onBlankAreaClicked?(); return }
+        let target = delta < -55 ? min(currentPage + 1, pageCount - 1) : (delta > 55 ? max(currentPage - 1, 0) : currentPage)
+        scrollToPage(target, animated: true)
     }
 
     // MARK: - 触控板交互式手势处理 (跟手平移与弹性吸附)
@@ -696,6 +809,11 @@ enum AnimationHelper {
             // 若垂直分量显著大于水平分量，视为垂直手势，不劫持水平翻页
             if abs(deltaX) < abs(deltaY) && abs(deltaY) > 5 {
                 return false
+            }
+            if let layer = pagesTrackView.layer, let position = layer.presentation()?.position, isAnimating {
+                animationGeneration += 1
+                layer.removeAnimation(forKey: "pageScroll")
+                pagesTrackView.frame.origin.x = position.x - layer.bounds.width * layer.anchorPoint.x
             }
             isDragging = true
             isAnimating = false
@@ -783,7 +901,7 @@ enum AnimationHelper {
         }
     }
 
-    override func mouseDown(with event: NSEvent) {
+    override func mouseUp(with event: NSEvent) {
         guard count > 1 else { return }
         let x = convert(event.locationInWindow, from: nil).x
         let spacing: CGFloat = 16
@@ -800,13 +918,13 @@ enum AnimationHelper {
 }
 
 struct FolderAppearance: Codable, Sendable {
-    var cornerRadius: Double = 24
-    var backgroundOpacity: Double = 0.88
-    var backgroundTint: String = "383a40"
-    var backdropBlurRadius: Double = 16
-    var backdropDimOpacity: Double = 0.20
-    var openDuration: Double = 0.20
-    var closeDuration: Double = 0.22
+    var cornerRadius: Double = 18
+    var backgroundOpacity: Double = 0.38
+    var backgroundTint: String = "20201e"
+    var backdropBlurRadius: Double = 20
+    var backdropDimOpacity: Double = 0.16
+    var openDuration: Double = 0.26
+    var closeDuration: Double = 0.24
 
     static func load() -> FolderAppearance {
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NovaLaunchpad/folder.json")
@@ -831,7 +949,7 @@ struct FolderAppearance: Codable, Sendable {
         if let panel, panel.frame.contains(point), let target = panel.hitTest(point) { return target }
         return self
     }
-    override func mouseDown(with event: NSEvent) { onDismiss?(convert(event.locationInWindow, from: nil)) }
+    override func mouseUp(with event: NSEvent) { onDismiss?(convert(event.locationInWindow, from: nil)) }
 }
 
 @MainActor final class FolderOverlayController {
@@ -848,8 +966,6 @@ struct FolderAppearance: Codable, Sendable {
     private(set) var state: State = .closed
     private var generation = 0
     private var snapshotReady = false
-    private var cachedBackdrop: CGImage?
-    private var cacheGeneration = 0
     var onClosed: (() -> Void)?
 
     init() {
@@ -863,7 +979,7 @@ struct FolderAppearance: Codable, Sendable {
         fallback.state = .active
         fallback.wantsLayer = true
         dim.wantsLayer = true
-        dim.layer?.backgroundColor = NSColor(calibratedRed: 0.07, green: 0.08, blue: 0.12, alpha: 1).cgColor
+        dim.layer?.backgroundColor = NSColor.black.cgColor
         for view in [fallback, snapshot, dim] as [NSView] {
             view.autoresizingMask = [.width, .height]
             root.addSubview(view)
@@ -887,40 +1003,12 @@ struct FolderAppearance: Codable, Sendable {
         panel.addSubview(indicator)
     }
 
-    func invalidateSnapshot() {
-        cacheGeneration += 1
-        cachedBackdrop = nil
-    }
-
-    // Called while the main grid is idle, never from a folder click.
-    func prewarmSnapshot(from view: NSView) {
-        guard state == .closed, view.window?.isVisible == true else { return }
-        cacheGeneration += 1
-        let current = cacheGeneration
-        view.layoutSubtreeIfNeeded()
-        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        guard let image = bitmap.cgImage else { return }
-        let radius = appearance.backdropBlurRadius * (view.window?.backingScaleFactor ?? 1)
-        Task {
-            let result = await Task.detached(priority: .utility) { () -> CGImage? in
-                let original = CIImage(cgImage: image)
-                let scale = min(1, 960 / max(1, original.extent.width))
-                let source = original.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-                let adjusted = source.clampedToExtent().applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius * scale]).cropped(to: source.extent)
-                    .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0.88, kCIInputBrightnessKey: -0.025])
-                return WallpaperBlurRenderer.context.createCGImage(adjusted, from: source.extent)
-            }.value
-            guard current == self.cacheGeneration else { return }
-            self.cachedBackdrop = result
-        }
-    }
-
-    func prepareSnapshot(from view: NSView) {
+    func prepareSnapshot(from view: LauncherBackgroundView) {
         generation += 1
         state = .opening
         snapshotReady = false
-        finishPreparing(cachedBackdrop, generation: generation)
+        let image = view.preparedWallpaper?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        finishPreparing(image, generation: generation)
     }
 
     private func finishPreparing(_ image: CGImage?, generation current: Int) {
@@ -938,6 +1026,14 @@ struct FolderAppearance: Codable, Sendable {
         if let layer = panel.layer {
             LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: CATransform3DMakeScale(0.94, 0.94, 1)), duration: 0, curve: instant)
         }
+        // The launcher hide animation may leave this layer transparent even after
+        // NSView is unhidden. Reset the model layer before accepting clicks.
+        root.layer?.removeAnimation(forKey: "launcher.opacity")
+        root.alphaValue = 1
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        root.layer?.opacity = 1
+        CATransaction.commit()
         root.isHidden = false
         animate(opening: true)
     }
@@ -980,6 +1076,8 @@ struct FolderAppearance: Codable, Sendable {
         snapshotReady = false
         root.isHidden = true
         root.alphaValue = 1
+        root.layer?.removeAnimation(forKey: "launcher.opacity")
+        root.layer?.opacity = 1
         snapshot.image = nil
     }
 }
@@ -988,6 +1086,14 @@ struct FolderAppearance: Codable, Sendable {
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: LauncherWindow!
     private let backgroundView = LauncherBackgroundView(frame: .zero)
+    private var menuCover: NSWindow?
+    private var menuCoverImage: NSImageView?
+    private var menuCoverTint: NSView?
+    private var wallpaperTimer: Timer?
+    #if DEBUG
+    private var backgroundDebugPanel: BackgroundDebugPanel?
+    private var debugRefreshTask: Task<Void, Never>?
+    #endif
     private let searchCapsule = SearchCapsuleView(frame: .zero)
     private let pagedContainer = PagedContainerView(frame: .zero)
     private let pageIndicator = PageIndicator()
@@ -1001,6 +1107,7 @@ struct FolderAppearance: Codable, Sendable {
     private let folderOverlay = FolderOverlayController()
     private var folderSourceRect = NSRect.zero
     private var folderMainItems: [AppRecord] = []
+    private var loadedFolderItems: [AppRecord]?
     private var folderClosing: Bool { folderOverlay.state == .closing }
     private var folderBackdrop: FolderBackdropView { folderOverlay.root }
     private var folderPanel: NSView { folderOverlay.panel }
@@ -1013,6 +1120,10 @@ struct FolderAppearance: Codable, Sendable {
     private var refreshTask: Task<Void, Never>?
     private var scanGeneration = 0
     private var lastWheelTurn = Date.distantPast
+    private var pointerDown: NSEvent?
+    private var pointerDragging = false
+    private var pointerIsBlank = false
+    private weak var pointerItem: AppItemView?
     private var isLaunching = false
     private var launcherTargetVisible = false
     private var showRequestGeneration = 0
@@ -1106,6 +1217,10 @@ struct FolderAppearance: Codable, Sendable {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(volumeChanged), name: NSWorkspace.didMountNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(volumeChanged), name: NSWorkspace.didUnmountNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(spaceChanged), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        wallpaperTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshVisibleWallpaper() }
+        }
 
         Task {
             layout = await Task.detached(priority: .utility) { LayoutStore.load() }.value
@@ -1121,22 +1236,58 @@ struct FolderAppearance: Codable, Sendable {
         let appMenu = NSMenu()
         appItem.submenu = appMenu
         appMenu.addItem(withTitle: "重新扫描应用", action: #selector(manualRefresh), keyEquivalent: "r").target = self
+        #if DEBUG
+        appMenu.addItem(withTitle: "背景调试…", action: #selector(showBackgroundDebug), keyEquivalent: "d").target = self
+        #endif
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "退出 Nova Launchpad", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         NSApp.mainMenu = menu
     }
 
     private func setupEventMonitors() {
-        // Allow the same folder icon to reverse a closing transition, even while
-        // the shrinking panel is still covering its original hit target.
-        NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            guard let self, event.window === self.window else { return event }
-            if self.openFolder != nil && self.folderBackdrop.isHidden { return nil }
-            guard self.folderClosing else { return event }
-            let point = self.folderBackdrop.convert(event.locationInWindow, from: nil)
-            guard self.folderSourceRect.contains(point) else { return event }
-            self.animateFolder(opening: true)
-            return nil
+        NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            guard let self, event.window === self.window, self.window.isVisible, !self.isLaunching else { return event }
+            switch event.type {
+            case .leftMouseDown:
+                self.pointerDown = event
+                self.pointerDragging = false
+                self.pointerItem = nil
+                let point = self.backgroundView.convert(event.locationInWindow, from: nil)
+                var target = self.backgroundView.hitTest(point)
+                var isControl = false
+                while let view = target {
+                    if let item = view as? AppItemView { self.pointerItem = item; isControl = true; break }
+                    if view is SearchCapsuleView || view is PageIndicator { isControl = true; break }
+                    target = view.superview
+                }
+                self.pointerIsBlank = !isControl
+                return event
+            case .leftMouseDragged:
+                guard let down = self.pointerDown else { return event }
+                let dx = event.locationInWindow.x - down.locationInWindow.x
+                let dy = event.locationInWindow.y - down.locationInWindow.y
+                if !self.pointerDragging && hypot(dx, dy) >= 6 {
+                    self.pointerDragging = true
+                    self.pointerItem?.cancelPress()
+                    self.activePages.beginMouseDrag(down)
+                }
+                if self.pointerDragging { self.activePages.moveMouseDrag(event); return nil }
+                return event
+            case .leftMouseUp:
+                guard self.pointerDown != nil else { return event }
+                self.pointerDown = nil
+                if self.pointerDragging {
+                    self.pointerDragging = false
+                    self.activePages.endMouseDrag(event)
+                    return nil
+                }
+                if self.pointerIsBlank {
+                    if self.openFolder != nil { self.closeFolder() } else { self.hide() }
+                    return nil
+                }
+                return event
+            default: return event
+            }
         }
         // 键盘监控
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -1232,12 +1383,19 @@ struct FolderAppearance: Codable, Sendable {
         let duration: CFTimeInterval = reduced ? 0.12 : backgroundView.style.animationDuration * (visible ? 1 : 5.0 / 6.0)
         let curve = CAMediaTimingFunction(controlPoints: visible ? 0.18 : 0.4, visible ? 0.8 : 0.0, 0.3, 1.0)
         let opacity: Float = visible ? 1 : 0
+        if let cover = menuCover {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = duration
+                context.timingFunction = curve
+                cover.animator().alphaValue = visible ? 1 : 0
+            }
+        }
         for layer in backgroundView.transitionLayers {
             LauncherTransition.set(layer, keyPath: "opacity", value: visible ? backgroundView.targetOpacity(for: layer) : 0, duration: duration, curve: curve)
         }
         for layer in pagedContainer.visibleItemLayers {
             LauncherTransition.set(layer, keyPath: "opacity", value: opacity, duration: duration, curve: curve)
-            let scale: CGFloat = visible || reduced ? 1 : 1.15
+            let scale: CGFloat = visible || reduced ? 1 : 1.08
             LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: CATransform3DMakeScale(scale, scale, 1)), duration: duration, curve: curve)
         }
         for layer in [searchCapsule.layer, pageIndicator.layer].compactMap({ $0 }) {
@@ -1251,6 +1409,7 @@ struct FolderAppearance: Codable, Sendable {
             self.transitionInProgress = false
             if !visible {
                 self.window.orderOut(nil)
+                self.menuCover?.orderOut(nil)
                 self.isLaunching = false
                 if self.openFolder != nil {
                     self.resetFolderLayers()
@@ -1294,6 +1453,7 @@ struct FolderAppearance: Codable, Sendable {
 
     private func showPrepared(on currentScreen: NSScreen) {
         window.setFrame(currentScreen.frame, display: true)
+        prepareMenuCover(on: currentScreen)
 
         let screenWidth = currentScreen.frame.width
         let screenHeight = currentScreen.frame.height
@@ -1338,22 +1498,92 @@ struct FolderAppearance: Codable, Sendable {
             }
             if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 for layer in pagedContainer.visibleItemLayers {
-                    LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: CATransform3DMakeScale(1.15, 1.15, 1)), duration: 0, curve: instant)
+                    LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: CATransform3DMakeScale(1.08, 1.08, 1)), duration: 0, curve: instant)
                 }
             }
             window.alphaValue = 1
             window.makeKeyAndOrderFront(nil)
+            menuCover?.orderFrontRegardless()
             NSApp.activate(ignoringOtherApps: true)
             searchCapsule.makeFirstResponder()
         }
         transition(visible: true)
     }
 
+    // Cover only the menu bar, leaving the main window below the Dock's level.
+    private func prepareMenuCover(on screen: NSScreen) {
+        let frame = screen.frame
+        let height = min(frame.height, max(NSStatusBar.system.thickness, frame.maxY - screen.visibleFrame.maxY))
+        let rect = NSRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height)
+        if menuCover == nil {
+            let cover = NSWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false)
+            cover.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 1)
+            cover.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+            cover.ignoresMouseEvents = true
+            cover.isOpaque = false
+            cover.backgroundColor = .clear
+            cover.hasShadow = false
+            let clip = NSView(frame: NSRect(origin: .zero, size: rect.size))
+            clip.wantsLayer = true
+            clip.layer?.masksToBounds = true
+            clip.layer?.backgroundColor = NSColor(white: 0.25, alpha: 1).cgColor
+            let image = NSImageView()
+            image.imageScaling = .scaleAxesIndependently
+            clip.addSubview(image)
+            let tint = NSView(frame: clip.bounds)
+            tint.wantsLayer = true
+            tint.autoresizingMask = [.width, .height]
+            clip.addSubview(tint)
+            cover.contentView = clip
+            menuCover = cover
+            menuCoverImage = image
+            menuCoverTint = tint
+        }
+        menuCover?.setFrame(rect, display: true)
+        menuCoverImage?.frame = NSRect(x: 0, y: height - frame.height, width: frame.width, height: frame.height)
+        menuCoverImage?.image = backgroundView.preparedWallpaper
+        let hex = backgroundView.style.overlayColor.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        let rgb = UInt32(hex, radix: 16) ?? 0
+        menuCoverTint?.layer?.backgroundColor = NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: backgroundView.style.overlayOpacity).cgColor
+        menuCover?.alphaValue = 0
+    }
+
     @objc private func volumeChanged() { scheduleRefresh() }
     @objc private func manualRefresh() { refresh() }
-    @objc private func spaceChanged() {
-        // Refresh the background on the next presentation, after the current transition.
+    @objc private func spaceChanged() { refreshVisibleWallpaper() }
+    @objc private func screenParametersChanged() {
+        guard window.isVisible, let screen = window.screen else { return }
+        backgroundView.updateWallpaper(for: screen) { [weak self] in
+            guard let self, self.window.isVisible else { return }
+            self.showPrepared(on: screen)
+        }
     }
+    private func refreshVisibleWallpaper() {
+        guard window.isVisible, launcherTargetVisible, !transitionInProgress, let screen = window.screen else { return }
+        backgroundView.updateWallpaper(for: screen) { [weak self] in
+            guard let self, self.window.isVisible, self.launcherTargetVisible else { return }
+            self.menuCoverImage?.image = self.backgroundView.preparedWallpaper
+        }
+    }
+    #if DEBUG
+    @objc private func showBackgroundDebug() {
+        if backgroundDebugPanel == nil {
+            backgroundDebugPanel = BackgroundDebugPanel(style: backgroundView.style) { [weak self] style in
+                guard let self else { return }
+                self.debugRefreshTask?.cancel()
+                self.debugRefreshTask = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(150))
+                    guard !Task.isCancelled else { return }
+                    self.backgroundView.setStyle(style)
+                    self.refreshVisibleWallpaper()
+                    self.menuCoverTint?.layer?.backgroundColor = NSColor.black.withAlphaComponent(style.overlayOpacity).cgColor
+                }
+            }
+        }
+        backgroundDebugPanel?.showWindow(nil)
+        backgroundDebugPanel?.window?.makeKeyAndOrderFront(nil)
+    }
+    #endif
 
     private func scheduleRefresh() {
         refreshTask?.cancel()
@@ -1384,6 +1614,7 @@ struct FolderAppearance: Codable, Sendable {
             if transitionInProgress || openFolder != nil { pendingRefresh = true; return }
             let oldPaths = layout.paths
             apps = layout.reconcile(result)
+            loadedFolderItems = nil
             if oldPaths != layout.paths {
                 let snapshot = layout
                 storageQueue.async { try? LayoutStore.save(snapshot) }
@@ -1427,14 +1658,7 @@ struct FolderAppearance: Codable, Sendable {
     }
 
     private func scheduleBackdropWarmup() {
-        backdropWarmup?.cancel()
-        folderOverlay.invalidateSnapshot()
-        backdropWarmup = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled, let self, self.openFolder == nil,
-                  !self.transitionInProgress, self.window.isVisible else { return }
-            self.folderOverlay.prewarmSnapshot(from: self.backgroundView)
-        }
+        // The prepared wallpaper is already cached; opening a folder needs no screen capture.
     }
 
     private func reloadDisplayed() {
@@ -1468,7 +1692,12 @@ struct FolderAppearance: Codable, Sendable {
         folderTitle.frame = NSRect(x: 0, y: height - 60, width: width, height: 30)
         folderPages.frame = NSRect(x: 20, y: 42, width: width - 40, height: max(1, height - 115))
         folderIndicator.frame = NSRect(x: (width - 200) / 2, y: 10, width: 200, height: 20)
-        folderPages.reloadPages(apps: contents, folders: [:], iconCache: iconCache)
+        if loadedFolderItems != contents {
+            folderPages.reloadPages(apps: contents, folders: [:], iconCache: iconCache)
+            loadedFolderItems = contents
+        } else {
+            folderPages.scrollToPage(0, animated: false)
+        }
         folderPages.layoutSubtreeIfNeeded()
         folderIndicator.count = folderPages.pageCount
         folderIndicator.current = folderPages.currentPage
@@ -1501,6 +1730,7 @@ struct FolderAppearance: Codable, Sendable {
             guard let self else { return }
             NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: app.path), configuration: NSWorkspace.OpenConfiguration())
             self.window.orderOut(nil)
+            self.menuCover?.orderOut(nil)
             self.window.alphaValue = 1.0
             targetItemView?.resetLaunchAnimation()
             if self.openFolder != nil {
