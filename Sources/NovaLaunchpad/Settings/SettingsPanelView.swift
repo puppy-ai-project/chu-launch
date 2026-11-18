@@ -159,10 +159,12 @@ enum SettingsTab {
 @MainActor private final class SettingsActionButton: NSControl {
     enum Style {
         case primary
+        case secondary
+        case success
         case circleIcon
     }
 
-    private let style: Style
+    private var style: Style
     private let titleLabel = NSTextField(labelWithString: "")
     private let iconView = NSImageView()
     private var trackingAreaRef: NSTrackingArea?
@@ -171,7 +173,7 @@ enum SettingsTab {
     var isLoading = false {
         didSet {
             isEnabled = !isLoading
-            titleLabel.stringValue = isLoading ? "检查中…" : defaultTitle
+            titleLabel.stringValue = isLoading ? loadingTitle : defaultTitle
             updateAppearanceColors()
         }
     }
@@ -179,6 +181,7 @@ enum SettingsTab {
         didSet { updateAppearanceColors() }
     }
     var defaultTitle: String
+    var loadingTitle: String = "检查中…"
     var onTap: (() -> Void)?
 
     init(frame: NSRect, style: Style, title: String = "", symbolName: String? = nil, accessibilityLabel: String? = nil, pointSize: CGFloat = 11) {
@@ -189,7 +192,7 @@ enum SettingsTab {
         layer?.cornerRadius = style == .circleIcon ? frame.height / 2 : 8
         layer?.masksToBounds = true
 
-        if style == .primary {
+        if style != .circleIcon {
             titleLabel.stringValue = title
             titleLabel.alignment = .center
             titleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
@@ -209,10 +212,19 @@ enum SettingsTab {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    func configure(style newStyle: Style, title: String, loading: Bool = false, loadingText: String = "检查中…") {
+        style = newStyle
+        defaultTitle = title
+        loadingTitle = loadingText
+        isLoading = loading
+        titleLabel.stringValue = loading ? loadingText : title
+        updateAppearanceColors(animated: true)
+    }
+
     override func layout() {
         super.layout()
         layer?.cornerRadius = style == .circleIcon ? bounds.height / 2 : 8
-        if style == .primary {
+        if style != .circleIcon {
             let textHeight = ceil(titleLabel.intrinsicContentSize.height)
             titleLabel.frame = NSRect(x: 6, y: floor((bounds.height - textHeight) / 2), width: bounds.width - 12, height: textHeight)
         } else {
@@ -285,6 +297,43 @@ enum SettingsTab {
                 border = NSColor.white.withAlphaComponent(0.16)
                 titleLabel.textColor = .white
             }
+        case .success:
+            let green = NSColor(srgbRed: 0.12, green: 0.72, blue: 0.45, alpha: 1)
+            if isLoading || !isEnabled {
+                bg = green.withAlphaComponent(isDark ? 0.35 : 0.45)
+                border = NSColor.clear
+                titleLabel.textColor = NSColor.white.withAlphaComponent(0.82)
+            } else if isPressed {
+                bg = green.blended(withFraction: 0.20, of: .black) ?? green
+                border = NSColor.white.withAlphaComponent(0.14)
+                titleLabel.textColor = .white
+            } else if isHovered {
+                bg = green.blended(withFraction: 0.10, of: .white) ?? green
+                border = NSColor.white.withAlphaComponent(0.24)
+                titleLabel.textColor = .white
+            } else {
+                bg = green
+                border = NSColor.white.withAlphaComponent(0.18)
+                titleLabel.textColor = .white
+            }
+        case .secondary:
+            if !isEnabled {
+                bg = isDark ? NSColor.white.withAlphaComponent(0.04) : NSColor.black.withAlphaComponent(0.03)
+                border = isDark ? NSColor.white.withAlphaComponent(0.06) : NSColor.black.withAlphaComponent(0.05)
+                titleLabel.textColor = .tertiaryLabelColor
+            } else if isPressed {
+                bg = isDark ? NSColor.white.withAlphaComponent(0.18) : NSColor.black.withAlphaComponent(0.12)
+                border = isDark ? NSColor.white.withAlphaComponent(0.16) : NSColor.black.withAlphaComponent(0.12)
+                titleLabel.textColor = .labelColor
+            } else if isHovered {
+                bg = isDark ? NSColor.white.withAlphaComponent(0.13) : NSColor.black.withAlphaComponent(0.08)
+                border = isDark ? NSColor.white.withAlphaComponent(0.16) : NSColor.black.withAlphaComponent(0.10)
+                titleLabel.textColor = .labelColor
+            } else {
+                bg = isDark ? NSColor.white.withAlphaComponent(0.08) : NSColor.black.withAlphaComponent(0.05)
+                border = isDark ? NSColor.white.withAlphaComponent(0.12) : NSColor.black.withAlphaComponent(0.08)
+                titleLabel.textColor = .labelColor
+            }
         case .circleIcon:
             if !isEnabled {
                 bg = isDark ? NSColor.white.withAlphaComponent(0.03) : NSColor.black.withAlphaComponent(0.025)
@@ -320,6 +369,101 @@ enum SettingsTab {
         } else {
             apply()
         }
+    }
+}
+
+// MARK: - 精致渐变圆角下载进度条
+@MainActor private final class UpdateProgressBarView: NSView {
+    private let trackLayer = CALayer()
+    private let fillLayer = CAGradientLayer()
+    private var fraction: Double? = 0
+    private var isAnimatingIndeterminate = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+
+        trackLayer.cornerRadius = frameRect.height / 2
+        trackLayer.masksToBounds = true
+        layer?.addSublayer(trackLayer)
+
+        fillLayer.colors = [
+            NSColor(srgbRed: 0.22, green: 0.74, blue: 0.97, alpha: 1).cgColor,
+            NSColor(srgbRed: 0.23, green: 0.51, blue: 0.96, alpha: 1).cgColor
+        ]
+        fillLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        fillLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        fillLayer.cornerRadius = frameRect.height / 2
+        trackLayer.addSublayer(fillLayer)
+
+        updateColors()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layout() {
+        super.layout()
+        let radius = bounds.height / 2
+        trackLayer.frame = bounds
+        trackLayer.cornerRadius = radius
+        fillLayer.cornerRadius = radius
+        updateFillFrame(animated: false)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColors()
+    }
+
+    func updateColors() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        trackLayer.backgroundColor = (isDark
+            ? NSColor.white.withAlphaComponent(0.11)
+            : NSColor.black.withAlphaComponent(0.09)).cgColor
+    }
+
+    func setProgress(_ value: Double?) {
+        fraction = value
+        if value == nil {
+            startIndeterminateAnimation()
+        } else {
+            stopIndeterminateAnimation()
+            updateFillFrame(animated: true)
+        }
+    }
+
+    private func updateFillFrame(animated: Bool) {
+        guard let fraction else { return }
+        let clamped = min(1.0, max(0.0, fraction))
+        let width = bounds.width * CGFloat(clamped)
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(animated ? 0.18 : 0)
+        fillLayer.frame = CGRect(x: 0, y: 0, width: width, height: bounds.height)
+        CATransaction.commit()
+    }
+
+    private func startIndeterminateAnimation() {
+        guard !isAnimatingIndeterminate else { return }
+        isAnimatingIndeterminate = true
+        let barWidth = max(60, bounds.width * 0.28)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fillLayer.frame = CGRect(x: -barWidth, y: 0, width: barWidth, height: bounds.height)
+        CATransaction.commit()
+
+        let slide = CABasicAnimation(keyPath: "position.x")
+        slide.fromValue = -barWidth / 2
+        slide.toValue = bounds.width + barWidth / 2
+        slide.duration = 1.15
+        slide.repeatCount = .infinity
+        slide.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        fillLayer.add(slide, forKey: "indeterminateSlide")
+    }
+
+    private func stopIndeterminateAnimation() {
+        guard isAnimatingIndeterminate else { return }
+        isAnimatingIndeterminate = false
+        fillLayer.removeAnimation(forKey: "indeterminateSlide")
     }
 }
 
@@ -668,9 +812,23 @@ enum SettingsTab {
     private let updatesCard = FlippedView()
     private let updatesDivider = NSView()
     private let checkButton: SettingsActionButton
+    private let primaryActionButton: SettingsActionButton
     private let statusSpinner = NSProgressIndicator()
     private let statusIcon = NSImageView()
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
+
+    // 下载中进度与速率区域
+    private let progressContainer = FlippedView()
+    private let progressDetailLabel = NSTextField(labelWithString: "")
+    private let progressSpeedLabel = NSTextField(labelWithString: "")
+    private let progressBar = UpdateProgressBarView(frame: NSRect(x: 0, y: 28, width: 404, height: 6))
+
+    // 下载完成路径展示区域
+    private let savedPathBox = FlippedView()
+    private let savedPathLabel = NSTextField(wrappingLabelWithString: "")
+    private let revealFileButton: SettingsActionButton
+    private var downloadedFileURL: URL?
+
     private let projectCard = InteractiveCardView(frame: .zero)
 
     private let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
@@ -678,11 +836,14 @@ enum SettingsTab {
 
     private(set) var currentTab: SettingsTab = .general
     private var lastHotKeyStatus: HotKeyRegistrationStatus = .registered(.defaultHotKey)
+    private var currentUpdateState: UpdateState = .idle
 
     var isRecordingHotKey: Bool { hotKeyRecorder.isRecording }
 
-    private var releasePage: URL?
     var onCheckUpdates: (() -> Void)?
+    var onStartDownload: (() -> Void)?
+    var onCancelDownload: (() -> Void)?
+    var onInstallAndRestart: (() -> Void)?
     var onClose: (() -> Void)?
     var onHotKeyChanged: ((LaunchHotKey?) -> Void)?
     var onRecordingStateChanged: ((Bool) -> Void)?
@@ -718,9 +879,21 @@ enum SettingsTab {
             pointSize: 11.5
         )
         self.checkButton = SettingsActionButton(
-            frame: NSRect(x: 326, y: 22, width: 96, height: 32),
+            frame: NSRect(x: 334, y: 20, width: 88, height: 30),
             style: .primary,
             title: "检查更新"
+        )
+        self.primaryActionButton = SettingsActionButton(
+            frame: NSRect(x: 338, y: 20, width: 84, height: 30),
+            style: .primary,
+            title: "下载新版"
+        )
+        self.revealFileButton = SettingsActionButton(
+            frame: NSRect(x: 372, y: 7, width: 26, height: 26),
+            style: .circleIcon,
+            symbolName: "folder",
+            accessibilityLabel: "在访达中显示安装包",
+            pointSize: 11
         )
         self.closeButton = SettingsActionButton(
             frame: NSRect(x: 440, y: 15, width: 28, height: 28),
@@ -735,7 +908,7 @@ enum SettingsTab {
         selectTab(.general)
         setHotKeyStatus(.registered(.defaultHotKey))
         setLaunchAtLogin(enabled: false)
-        setStatus("点击“检查更新”查看是否有可用的新版本。")
+        applyUpdateState(.idle)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -948,14 +1121,14 @@ enum SettingsTab {
     // MARK: - 构建“关于”页面
     private func setupAboutPage() {
         // 卡片 1 - 应用名片卡
-        productCard.frame = NSRect(x: 24, y: 4, width: 440, height: 96)
+        productCard.frame = NSRect(x: 24, y: 4, width: 440, height: 92)
         productCard.wantsLayer = true
         productCard.layer?.cornerRadius = 14
         productCard.layer?.borderWidth = 1
         aboutPage.addSubview(productCard)
 
         let appIconBadge = GradientBadgeView(
-            frame: NSRect(x: 18, y: 20, width: 56, height: 56),
+            frame: NSRect(x: 18, y: 18, width: 56, height: 56),
             symbolName: "square.grid.3x3.fill",
             symbolPointSize: 25,
             colors: [
@@ -975,7 +1148,7 @@ enum SettingsTab {
         iconShadowHolder.addSubview(appIconBadge)
         productCard.addSubview(iconShadowHolder)
 
-        let titleField = makeLabel("Nova Launchpad", x: 90, y: 22, size: 18, weight: .bold, color: .labelColor, in: productCard)
+        let titleField = makeLabel("Nova Launchpad", x: 90, y: 20, size: 18, weight: .bold, color: .labelColor, in: productCard)
 
         // 版本号胶囊徽章（与主标题垂直中心对齐）
         versionBadgeLabel.stringValue = "v\(version)"
@@ -992,17 +1165,17 @@ enum SettingsTab {
         versionBadge.addSubview(versionBadgeLabel)
         productCard.addSubview(versionBadge)
 
-        makeLabel("轻量、纯粹的 macOS 原生离线应用启动器", x: 90, y: 52, size: 12.5, weight: .regular, color: .secondaryLabelColor, in: productCard)
+        makeLabel("轻量、纯粹的 macOS 原生离线应用启动器", x: 90, y: 50, size: 12.5, weight: .regular, color: .secondaryLabelColor, in: productCard)
 
-        // 卡片 2 - 软件更新卡
-        updatesCard.frame = NSRect(x: 24, y: 114, width: 440, height: 142)
+        // 卡片 2 - 软件更新卡（按状态自适应高度：常规态紧凑，下载中/完成平滑展开）
+        updatesCard.frame = NSRect(x: 24, y: 108, width: 440, height: 120)
         updatesCard.wantsLayer = true
         updatesCard.layer?.cornerRadius = 14
         updatesCard.layer?.borderWidth = 1
         aboutPage.addSubview(updatesCard)
 
         let updateIconBadge = GradientBadgeView(
-            frame: NSRect(x: 18, y: 22, width: 32, height: 32),
+            frame: NSRect(x: 18, y: 19, width: 32, height: 32),
             symbolName: "arrow.triangle.2.circlepath",
             symbolPointSize: 14,
             colors: [
@@ -1013,27 +1186,32 @@ enum SettingsTab {
         )
         updatesCard.addSubview(updateIconBadge)
 
-        makeLabel("软件更新", x: 62, y: 19, size: 14.5, weight: .semibold, color: .labelColor, in: updatesCard)
-        makeLabel("从 GitHub Releases 查询最新正式版本", x: 62, y: 40, size: 11.5, weight: .regular, color: .tertiaryLabelColor, in: updatesCard)
+        makeLabel("软件更新", x: 62, y: 16, size: 14.5, weight: .semibold, color: .labelColor, in: updatesCard)
+        makeLabel("GitHub Releases 正式版", x: 62, y: 37, size: 11.5, weight: .regular, color: .tertiaryLabelColor, in: updatesCard)
 
         checkButton.onTap = { [weak self] in
-            guard let self else { return }
-            if let releasePage { NSWorkspace.shared.open(releasePage) }
-            else { onCheckUpdates?() }
+            self?.onCheckUpdates?()
         }
         updatesCard.addSubview(checkButton)
 
-        updatesDivider.frame = NSRect(x: 18, y: 76, width: 404, height: 1)
+        primaryActionButton.isHidden = true
+        primaryActionButton.onTap = { [weak self] in
+            self?.handlePrimaryUpdateActionTap()
+        }
+        updatesCard.addSubview(primaryActionButton)
+
+        updatesDivider.frame = NSRect(x: 18, y: 70, width: 404, height: 1)
         updatesDivider.wantsLayer = true
         updatesCard.addSubview(updatesDivider)
 
+        // 常规状态行
         statusSpinner.style = .spinning
         statusSpinner.controlSize = .small
-        statusSpinner.frame = NSRect(x: 18, y: 100, width: 16, height: 16)
+        statusSpinner.frame = NSRect(x: 18, y: 87, width: 16, height: 16)
         statusSpinner.isHidden = true
         updatesCard.addSubview(statusSpinner)
 
-        statusIcon.frame = NSRect(x: 18, y: 100, width: 16, height: 16)
+        statusIcon.frame = NSRect(x: 18, y: 87, width: 16, height: 16)
         statusIcon.imageAlignment = .alignCenter
         statusIcon.imageScaling = .scaleProportionallyDown
         updatesCard.addSubview(statusIcon)
@@ -1042,18 +1220,61 @@ enum SettingsTab {
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.maximumNumberOfLines = 2
         statusLabel.lineBreakMode = .byWordWrapping
-        statusLabel.frame = NSRect(x: 42, y: 90, width: 380, height: 38)
+        statusLabel.frame = NSRect(x: 42, y: 85, width: 380, height: 20)
         updatesCard.addSubview(statusLabel)
 
-        // 卡片 3 - 开源项目与提示卡
-        projectCard.frame = NSRect(x: 24, y: 270, width: 440, height: 64)
+        // 下载进度与速率容器
+        progressContainer.frame = NSRect(x: 18, y: 84, width: 404, height: 34)
+        progressContainer.isHidden = true
+        updatesCard.addSubview(progressContainer)
+
+        progressDetailLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        progressDetailLabel.textColor = .labelColor
+        progressDetailLabel.lineBreakMode = .byTruncatingTail
+        progressDetailLabel.frame = NSRect(x: 0, y: 0, width: 300, height: 18)
+        progressContainer.addSubview(progressDetailLabel)
+
+        progressSpeedLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        progressSpeedLabel.textColor = .controlAccentColor
+        progressSpeedLabel.alignment = .right
+        progressSpeedLabel.frame = NSRect(x: 304, y: 0, width: 100, height: 18)
+        progressContainer.addSubview(progressSpeedLabel)
+
+        progressBar.frame = NSRect(x: 0, y: 24, width: 404, height: 6)
+        progressContainer.addSubview(progressBar)
+
+        // 下载完成后完整保存路径展示卡片
+        savedPathBox.frame = NSRect(x: 18, y: 110, width: 404, height: 42)
+        savedPathBox.wantsLayer = true
+        savedPathBox.layer?.cornerRadius = 8
+        savedPathBox.layer?.borderWidth = 0.5
+        savedPathBox.isHidden = true
+        updatesCard.addSubview(savedPathBox)
+
+        savedPathLabel.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        savedPathLabel.textColor = .secondaryLabelColor
+        savedPathLabel.maximumNumberOfLines = 2
+        savedPathLabel.lineBreakMode = .byCharWrapping
+        savedPathLabel.frame = NSRect(x: 10, y: 6, width: 356, height: 30)
+        savedPathBox.addSubview(savedPathLabel)
+
+        revealFileButton.toolTip = "在访达中显示安装包"
+        revealFileButton.onTap = { [weak self] in
+            if let fileURL = self?.downloadedFileURL {
+                NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+            }
+        }
+        savedPathBox.addSubview(revealFileButton)
+
+        // 卡片 3 - 开源项目与提示卡（位置随更新卡片高度联动）
+        projectCard.frame = NSRect(x: 24, y: updatesCard.frame.maxY + 12, width: 440, height: 58)
         projectCard.onTap = {
             NSWorkspace.shared.open(Self.repositoryURL)
         }
         aboutPage.addSubview(projectCard)
 
         let codeBadge = GradientBadgeView(
-            frame: NSRect(x: 18, y: 16, width: 32, height: 32),
+            frame: NSRect(x: 18, y: 13, width: 32, height: 32),
             symbolName: "chevron.left.forwardslash.chevron.right",
             symbolPointSize: 13,
             colors: [
@@ -1064,11 +1285,11 @@ enum SettingsTab {
         )
         projectCard.addSubview(codeBadge)
 
-        makeLabel("开源仓库 · GitHub", x: 62, y: 14, size: 13.5, weight: .medium, color: .labelColor, in: projectCard)
-        makeLabel("puppy-ai-project/nova-launch · 按 Esc 关闭设置", x: 62, y: 34, size: 11.5, weight: .regular, color: .tertiaryLabelColor, in: projectCard)
+        makeLabel("开源仓库 · GitHub", x: 62, y: 11, size: 13.5, weight: .medium, color: .labelColor, in: projectCard)
+        makeLabel("puppy-ai-project/nova-launch · 按 Esc 关闭设置", x: 62, y: 31, size: 11.5, weight: .regular, color: .tertiaryLabelColor, in: projectCard)
 
         let arrowConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
-        let externalArrow = NSImageView(frame: NSRect(x: 404, y: 23, width: 18, height: 18))
+        let externalArrow = NSImageView(frame: NSRect(x: 404, y: 20, width: 18, height: 18))
         externalArrow.image = NSImage(systemSymbolName: "arrow.up.right", accessibilityDescription: "打开仓库")?.withSymbolConfiguration(arrowConfig)
         externalArrow.contentTintColor = .tertiaryLabelColor
         externalArrow.imageAlignment = .alignCenter
@@ -1267,6 +1488,13 @@ enum SettingsTab {
             ? NSColor.white.withAlphaComponent(0.16)
             : NSColor.black.withAlphaComponent(0.11)).cgColor
 
+        savedPathBox.layer?.backgroundColor = (isDark
+            ? NSColor.black.withAlphaComponent(0.24)
+            : NSColor.black.withAlphaComponent(0.04)).cgColor
+        savedPathBox.layer?.borderColor = (isDark
+            ? NSColor.white.withAlphaComponent(0.10)
+            : NSColor.black.withAlphaComponent(0.08)).cgColor
+
         layer?.shadowOpacity = isDark ? 0.48 : 0.24
 
         generalTabButton.updateColors()
@@ -1274,6 +1502,9 @@ enum SettingsTab {
         hotKeyRecorder.updateColors()
         resetHotKeyButton.updateAppearanceColors()
         checkButton.updateAppearanceColors()
+        primaryActionButton.updateAppearanceColors()
+        revealFileButton.updateAppearanceColors()
+        progressBar.updateColors()
         closeButton.updateAppearanceColors()
         projectCard.updateColors()
     }
@@ -1289,45 +1520,260 @@ enum SettingsTab {
         return field
     }
 
-    // MARK: - 更新状态展示（自动区分加载 / 最新 / 新版本 / 错误）
-    func setStatus(_ text: String, releasePage: URL? = nil) {
-        self.releasePage = releasePage
-        checkButton.defaultTitle = releasePage == nil ? "检查更新" : "下载新版"
-        statusLabel.stringValue = text
+    // MARK: - 更新主操作按钮分发（下载新版 / 取消下载 / 重启安装 / 重试下载）
+    private func handlePrimaryUpdateActionTap() {
+        switch currentUpdateState {
+        case .available:
+            onStartDownload?()
+        case .downloading:
+            onCancelDownload?()
+        case .downloaded:
+            onInstallAndRestart?()
+        case .failed(_, let retryURL, _):
+            if retryURL != nil {
+                onStartDownload?()
+            }
+        case .idle, .checking, .upToDate, .noRelease, .installing:
+            break
+        }
+    }
+
+    /// 排布顶部“检查更新”与主操作按钮（“检查更新”除下载中外始终显示）
+    private func layoutUpdateButtons(
+        showCheckButton: Bool,
+        checkLoading: Bool = false,
+        checkEnabled: Bool = true,
+        primaryStyle: SettingsActionButton.Style? = nil,
+        primaryTitle: String? = nil,
+        primaryLoading: Bool = false,
+        primaryLoadingText: String = "处理中…"
+    ) {
+        if let primaryStyle, let primaryTitle {
+            primaryActionButton.isHidden = false
+            primaryActionButton.frame = NSRect(x: 338, y: 20, width: 84, height: 30)
+            primaryActionButton.configure(style: primaryStyle, title: primaryTitle, loading: primaryLoading, loadingText: primaryLoadingText)
+
+            checkButton.isHidden = !showCheckButton
+            if showCheckButton {
+                checkButton.frame = NSRect(x: 252, y: 20, width: 78, height: 30)
+                checkButton.configure(style: .secondary, title: "检查更新", loading: checkLoading, loadingText: "检查中…")
+                checkButton.isEnabled = checkEnabled && !checkLoading
+            }
+        } else {
+            primaryActionButton.isHidden = true
+            checkButton.isHidden = !showCheckButton
+            if showCheckButton {
+                checkButton.frame = NSRect(x: 334, y: 20, width: 88, height: 30)
+                checkButton.configure(style: .primary, title: "检查更新", loading: checkLoading, loadingText: "检查中…")
+                checkButton.isEnabled = checkEnabled && !checkLoading
+            }
+        }
+    }
+
+    /// 根据状态动态调整更新卡片高度并联动下方开源仓库卡片位置
+    private func setUpdatesCardHeight(_ targetHeight: CGFloat) {
+        let shouldAnimate = window?.isVisible == true && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion && abs(updatesCard.frame.height - targetHeight) > 0.5
+        let newCardFrame = NSRect(x: 24, y: 108, width: 440, height: targetHeight)
+        let newProjectFrame = NSRect(x: 24, y: newCardFrame.maxY + 12, width: 440, height: 58)
+
+        if shouldAnimate {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.16
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                updatesCard.animator().frame = newCardFrame
+                projectCard.animator().frame = newProjectFrame
+            }
+        } else {
+            updatesCard.frame = newCardFrame
+            projectCard.frame = newProjectFrame
+        }
+    }
+
+    // MARK: - 完整更新状态机 UI 同步
+    func applyUpdateState(_ state: UpdateState) {
+        currentUpdateState = state
         let config = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .semibold)
 
-        if text.contains("正在检查") {
-            checkButton.isLoading = true
+        switch state {
+        case .idle:
+            downloadedFileURL = nil
+            showSimpleStatus(
+                spinner: false,
+                icon: "info.circle",
+                iconColor: .tertiaryLabelColor,
+                text: "点击“检查更新”查看是否有可用的新版本。",
+                emphasized: false
+            )
+            layoutUpdateButtons(showCheckButton: true)
+
+        case .checking:
+            downloadedFileURL = nil
+            showSimpleStatus(
+                spinner: true,
+                icon: nil,
+                iconColor: .secondaryLabelColor,
+                text: "正在检查更新…",
+                emphasized: false
+            )
+            layoutUpdateButtons(showCheckButton: true, checkLoading: true)
+
+        case .upToDate(let currentVersion):
+            downloadedFileURL = nil
+            showSimpleStatus(
+                spinner: false,
+                icon: "checkmark.circle.fill",
+                iconColor: .systemGreen,
+                text: "当前已是最新版本（v\(currentVersion)）",
+                emphasized: true
+            )
+            layoutUpdateButtons(showCheckButton: true)
+
+        case .noRelease:
+            downloadedFileURL = nil
+            showSimpleStatus(
+                spinner: false,
+                icon: "info.circle",
+                iconColor: .tertiaryLabelColor,
+                text: "暂无公开的正式版本。",
+                emphasized: false
+            )
+            layoutUpdateButtons(showCheckButton: true)
+
+        case .available(let newVersion, _):
+            downloadedFileURL = nil
+            showSimpleStatus(
+                spinner: false,
+                icon: "arrow.down.circle.fill",
+                iconColor: .controlAccentColor,
+                text: "发现新版本 v\(newVersion)，点击“下载新版”开始下载。",
+                emphasized: true
+            )
+            layoutUpdateButtons(showCheckButton: true, primaryStyle: .primary, primaryTitle: "下载新版")
+
+        case .downloading(let newVersion, _, let progress):
+            downloadedFileURL = nil
+            statusSpinner.stopAnimation(nil)
+            statusSpinner.isHidden = true
+            statusIcon.isHidden = true
+            statusLabel.isHidden = true
+            savedPathBox.isHidden = true
+            progressContainer.isHidden = false
+
+            if let fraction = progress.fraction {
+                let percent = Int((fraction * 100).rounded())
+                progressDetailLabel.stringValue = "正在下载 v\(newVersion) · \(percent)% (\(UpdateFormat.byteCount(progress.bytesWritten)) / \(UpdateFormat.byteCount(progress.totalBytes)))"
+            } else {
+                progressDetailLabel.stringValue = "正在下载 v\(newVersion) · 已下载 \(UpdateFormat.byteCount(progress.bytesWritten))"
+            }
+            progressSpeedLabel.stringValue = UpdateFormat.speed(progress.bytesPerSecond)
+            progressBar.setProgress(progress.fraction)
+            // 下载中隐藏“检查更新”，只显示“取消下载”
+            layoutUpdateButtons(showCheckButton: false, primaryStyle: .secondary, primaryTitle: "取消下载")
+            setUpdatesCardHeight(132)
+
+        case .downloaded(let newVersion, let fileURL):
+            downloadedFileURL = fileURL
+            statusSpinner.stopAnimation(nil)
+            statusSpinner.isHidden = true
+            progressContainer.isHidden = true
+            statusIcon.isHidden = false
+            statusLabel.isHidden = false
+            savedPathBox.isHidden = false
+
+            statusIcon.frame = NSRect(x: 18, y: 84, width: 16, height: 16)
+            statusIcon.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config)
+            statusIcon.contentTintColor = .systemGreen
+
+            let doneText = "v\(newVersion) 下载完成，点击“重启安装”自动解压并更新"
+            statusLabel.stringValue = doneText
+            statusLabel.textColor = .labelColor
+            layoutStatusLabel(statusLabel, text: doneText, centerY: 92)
+
+            savedPathLabel.stringValue = "保存路径：\(fileURL.path)"
+            savedPathLabel.toolTip = fileURL.path
+            layoutUpdateButtons(showCheckButton: true, primaryStyle: .success, primaryTitle: "重启安装")
+            setUpdatesCardHeight(166)
+
+        case .installing(let newVersion, let fileURL):
+            downloadedFileURL = fileURL
+            progressContainer.isHidden = true
+            savedPathBox.isHidden = false
             statusIcon.isHidden = true
             statusSpinner.isHidden = false
+            statusSpinner.frame = NSRect(x: 18, y: 84, width: 16, height: 16)
             statusSpinner.startAnimation(nil)
-            statusLabel.textColor = .secondaryLabelColor
+            statusLabel.isHidden = false
+
+            let text = "正在解压 v\(newVersion) 并准备重启安装…"
+            statusLabel.stringValue = text
+            statusLabel.textColor = .labelColor
+            layoutStatusLabel(statusLabel, text: text, centerY: 92)
+
+            savedPathLabel.stringValue = "保存路径：\(fileURL.path)"
+            savedPathLabel.toolTip = fileURL.path
+            layoutUpdateButtons(
+                showCheckButton: true,
+                checkEnabled: false,
+                primaryStyle: .success,
+                primaryTitle: "重启安装",
+                primaryLoading: true,
+                primaryLoadingText: "安装中…"
+            )
+            setUpdatesCardHeight(166)
+
+        case .failed(let message, let retryURL, _):
+            downloadedFileURL = nil
+            showSimpleStatus(
+                spinner: false,
+                icon: "exclamationmark.triangle.fill",
+                iconColor: .systemOrange,
+                text: message,
+                emphasized: false
+            )
+            if retryURL != nil {
+                layoutUpdateButtons(showCheckButton: true, primaryStyle: .primary, primaryTitle: "重试下载")
+            } else {
+                layoutUpdateButtons(showCheckButton: true)
+            }
+        }
+    }
+
+    private func showSimpleStatus(spinner: Bool, icon: String?, iconColor: NSColor, text: String, emphasized: Bool) {
+        progressContainer.isHidden = true
+        savedPathBox.isHidden = true
+        statusLabel.isHidden = false
+
+        let textBounds = (text as NSString).boundingRect(
+            with: NSSize(width: 380, height: 42),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: statusLabel.font ?? NSFont.systemFont(ofSize: 12.5)]
+        )
+        let textHeight = min(38, ceil(textBounds.height) + 2)
+        // 紧凑均衡的上下留白（单行约上下各 14pt，总卡片高 118pt）
+        let bottomSectionHeight = max(46, textHeight + 28)
+        let centerY = floor(71 + bottomSectionHeight / 2)
+
+        if spinner {
+            statusIcon.isHidden = true
+            statusSpinner.isHidden = false
+            statusSpinner.frame = NSRect(x: 18, y: centerY - 8, width: 16, height: 16)
+            statusSpinner.startAnimation(nil)
         } else {
-            checkButton.isLoading = false
             statusSpinner.stopAnimation(nil)
             statusSpinner.isHidden = true
             statusIcon.isHidden = false
-
-            if text.contains("最新") {
-                statusIcon.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config)
-                statusIcon.contentTintColor = .systemGreen
-                statusLabel.textColor = .labelColor
-            } else if text.contains("发现新版本") {
-                statusIcon.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config)
-                statusIcon.contentTintColor = .controlAccentColor
-                statusLabel.textColor = .labelColor
-            } else if text.contains("失败") {
-                statusIcon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config)
-                statusIcon.contentTintColor = .systemOrange
-                statusLabel.textColor = .secondaryLabelColor
-            } else {
-                statusIcon.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: nil)?.withSymbolConfiguration(config)
-                statusIcon.contentTintColor = .tertiaryLabelColor
-                statusLabel.textColor = .secondaryLabelColor
+            statusIcon.frame = NSRect(x: 18, y: centerY - 8, width: 16, height: 16)
+            if let icon {
+                let config = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .semibold)
+                statusIcon.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)?.withSymbolConfiguration(config)
+                statusIcon.contentTintColor = iconColor
             }
         }
 
-        layoutStatusLabel(statusLabel, text: text, centerY: 108)
+        statusLabel.stringValue = text
+        statusLabel.textColor = emphasized ? .labelColor : .secondaryLabelColor
+        statusLabel.frame = NSRect(x: 42, y: floor(centerY - textHeight / 2), width: 380, height: textHeight)
+        setUpdatesCardHeight(71 + bottomSectionHeight)
     }
 
     // MARK: - 交互命中与面板拖动

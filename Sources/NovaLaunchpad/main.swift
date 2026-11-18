@@ -1260,6 +1260,7 @@ private enum AppSortOrder: Int {
     private let moreMenu = NSMenu()
     private var settingsPanel: SettingsPanelView?
     private let hotKeyManager = GlobalHotKeyManager()
+    private let updateManager = AppUpdateManager()
     private let moreButton = NSButton()
     private let pagedContainer = PagedContainerView(frame: .zero)
     private let pageIndicator = PageIndicator()
@@ -1400,6 +1401,9 @@ private enum AppSortOrder: Int {
         hotKeyManager.onTrigger = { [weak self] in
             self?.toggleLauncher()
         }
+        updateManager.onStateChanged = { [weak self] state in
+            self?.settingsPanel?.applyUpdateState(state)
+        }
         let savedHotKey = HotKeyStore.load()
         let hotKeyStatus = hotKeyManager.register(savedHotKey)
         if case .conflict(let key, let code) = hotKeyStatus {
@@ -1502,8 +1506,12 @@ private enum AppSortOrder: Int {
         panel.selectTab(initialTab)
         panel.setHotKeyStatus(hotKeyManager.lastStatus)
         panel.setLaunchAtLogin(enabled: LaunchAtLoginManager.isEnabled())
+        panel.applyUpdateState(updateManager.state)
 
-        panel.onCheckUpdates = { [weak self] in self?.performUpdateCheck() }
+        panel.onCheckUpdates = { [weak self] in self?.updateManager.checkForUpdates() }
+        panel.onStartDownload = { [weak self] in self?.updateManager.startDownload() }
+        panel.onCancelDownload = { [weak self] in self?.updateManager.cancelDownload() }
+        panel.onInstallAndRestart = { [weak self] in self?.updateManager.installAndRestart() }
         panel.onRecordingStateChanged = { [weak self] recording in
             guard let self else { return }
             if recording {
@@ -1621,34 +1629,7 @@ private enum AppSortOrder: Int {
 
     @objc private func checkForUpdates() {
         openSettingsPanel(initialTab: .about)
-        settingsPanel?.setStatus("正在检查更新…")
-        performUpdateCheck()
-    }
-
-    private var checkingRelease = false
-
-    private func performUpdateCheck() {
-        guard let panel = settingsPanel, !checkingRelease else { return }
-        checkingRelease = true
-        panel.setStatus("正在检查更新…")
-        Task {
-            defer { checkingRelease = false }
-            do {
-                let release = try await GitHubRelease.latest()
-                if let release {
-                    let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
-                    if release.version.compare(current, options: .numeric) == .orderedDescending {
-                        settingsPanel?.setStatus("发现新版本 v" + release.version, releasePage: release.html_url)
-                    } else {
-                        settingsPanel?.setStatus("当前已是最新版本（v" + current + "）")
-                    }
-                } else {
-                    settingsPanel?.setStatus("暂无公开的正式版本。")
-                }
-            } catch {
-                settingsPanel?.setStatus("检查更新失败：" + error.localizedDescription)
-            }
-        }
+        updateManager.checkForUpdates()
     }
 
     @objc private func restartApp() {

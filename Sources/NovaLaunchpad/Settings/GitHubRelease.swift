@@ -1,11 +1,41 @@
 import Foundation
 
-struct GitHubRelease: Decodable {
+struct GitHubRelease: Decodable, Sendable {
+    struct Asset: Decodable, Sendable {
+        let name: String
+        let browser_download_url: URL
+    }
+
     let tag_name: String
     let html_url: URL
+    let assets: [Asset]?
+
     var version: String { tag_name.first?.lowercased() == "v" ? String(tag_name.dropFirst()) : tag_name }
 
+    /// 优先返回 .zip 附件直链，否则回退到 html_url
+    var downloadURL: URL {
+        if let zipAsset = assets?.first(where: { $0.name.lowercased().hasSuffix(".zip") && $0.browser_download_url.scheme == "https" }) {
+            return zipAsset.browser_download_url
+        }
+        return html_url
+    }
+
+    /// 临时测试用版本与下载地址；验证完成后置为 nil 即可恢复正式 GitHub Releases 检查
+    private static let temporaryTestRelease: GitHubRelease? = GitHubRelease(
+        tag_name: "v1.0.8",
+        html_url: URL(string: "https://github.com/puppy-ai-project/chu-image/releases/download/1.0.8/ChuImage-1.0.8-mac-x64.zip")!,
+        assets: [
+            Asset(
+                name: "ChuImage-1.0.8-mac-x64.zip",
+                browser_download_url: URL(string: "https://github.com/puppy-ai-project/chu-image/releases/download/1.0.8/ChuImage-1.0.8-mac-x64.zip")!
+            )
+        ]
+    )
+
     static func latest() async throws -> Self? {
+        if let testRelease = temporaryTestRelease {
+            return testRelease
+        }
         let endpoint = URL(string: "https://api.github.com/repos/puppy-ai-project/nova-launch/releases/latest")!
         var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
