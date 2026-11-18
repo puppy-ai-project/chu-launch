@@ -66,6 +66,28 @@ struct Layout: Codable, Sendable {
     }
 }
 
+struct AppIndexSnapshot: Codable, Sendable {
+    var version = 1
+    var apps: [AppRecord]
+}
+
+enum AppIndexStore {
+    static var defaultURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ChuLaunchpad/apps.json")
+    }
+
+    static func load(from url: URL = defaultURL) throws -> [AppRecord]? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let snapshot = try JSONDecoder().decode(AppIndexSnapshot.self, from: Data(contentsOf: url))
+        return snapshot.version == 1 ? snapshot.apps : nil
+    }
+
+    static func save(_ apps: [AppRecord], to url: URL = defaultURL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(AppIndexSnapshot(apps: apps)).write(to: url, options: .atomic)
+    }
+}
+
 enum LayoutStore {
     static var defaultURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ChuLaunchpad/layout.json")

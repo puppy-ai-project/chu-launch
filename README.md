@@ -42,6 +42,13 @@ Chu Launchpad 是一个开源的 macOS 应用启动器，使用 Swift 和 AppKit
 open 'build/Chu Launchpad.app'
 ```
 
+常驻启动器会显示 Dock 图标，正式版和调试版都可从 Dock 唤起。调试构建命令：
+
+```sh
+CHU_DEBUG=1 ./scripts/build.sh
+open 'build/Chu Launchpad.app'
+```
+
 运行回归检查：
 
 ```sh
