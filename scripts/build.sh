@@ -15,14 +15,17 @@ if [ -n "${CHU_ARCH:-}" ]; then
         arm64|x86_64) ;;
         *) echo "CHU_ARCH must be arm64 or x86_64" >&2; exit 2 ;;
     esac
-    swiftc "$@" -target "$CHU_ARCH-apple-macosx14.0" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/ChuLaunchpad/Core/*.swift Sources/ChuLaunchpad/Settings/*.swift Sources/ChuLaunchpad/main.swift -o "$APP/Contents/MacOS/ChuLaunchpad"
-else
-    swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/ChuLaunchpad/Core/*.swift Sources/ChuLaunchpad/Settings/*.swift Sources/ChuLaunchpad/main.swift -o "$APP/Contents/MacOS/ChuLaunchpad"
+    set -- "$@" -target "$CHU_ARCH-apple-macosx14.0"
 fi
+AGENT="$APP/Contents/Helpers/ChuLaunchAgent.app"
+mkdir -p "$AGENT/Contents/MacOS" "$AGENT/Contents/Resources"
+swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/ChuLaunchpad/Core/*.swift Sources/ChuLaunchpad/Settings/*.swift Sources/ChuLaunchpad/main.swift -o "$AGENT/Contents/MacOS/ChuLaunchAgent"
+swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O scripts/entry/main.swift -o "$APP/Contents/MacOS/ChuLaunchpad"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
+<key>LSUIElement</key><true/>
 <key>CFBundleExecutable</key><string>ChuLaunchpad</string>
 <key>CFBundleIdentifier</key><string>com.withqq.chu-launchpad</string>
 <key>CFBundleName</key><string>Chu Launchpad</string>
@@ -68,4 +71,8 @@ sips -z 1024 1024 "$iconset/source.png" --out "$iconset/icon_512x512@2x.png" >/d
 rm "$iconset/source.png"
 iconutil -c icns "$iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 /usr/libexec/PlistBuddy -c 'Add :CFBundleIconFile string AppIcon' "$APP/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile AppIcon' "$APP/Contents/Info.plist"
+cp "$APP/Contents/Info.plist" "$AGENT/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.withqq.chu-launchpad.agent" "$AGENT/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ChuLaunchAgent" "$AGENT/Contents/Info.plist"
+cp "$APP/Contents/Resources/AppIcon.icns" "$AGENT/Contents/Resources/"
 printf 'Built %s\n' "$APP"

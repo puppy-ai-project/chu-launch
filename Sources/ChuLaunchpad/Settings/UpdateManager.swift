@@ -398,7 +398,10 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
         guard case .downloaded(let version, let zipURL) = state else { return }
         state = .installing(version: version, fileURL: zipURL)
 
-        let targetAppURL = Bundle.main.bundleURL
+        let agentURL = Bundle.main.bundleURL
+        let targetAppURL = agentURL.lastPathComponent == "ChuLaunchAgent.app"
+            ? agentURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            : agentURL
         let extractDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("ChuLaunchpad-Install-\(UUID().uuidString)", isDirectory: true)
 

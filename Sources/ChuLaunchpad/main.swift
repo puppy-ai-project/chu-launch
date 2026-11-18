@@ -1329,7 +1329,9 @@ private enum AppSortOrder: Int {
     private let logger = Logger(subsystem: "com.withqq.chu-launchpad.app", category: "launcher")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(.accessory)
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(toggleFromDock(_:)),
+            name: Notification.Name("com.withqq.chu-launchpad.toggle"), object: nil, suspensionBehavior: .deliverImmediately)
         NSApp.applicationIconImage = ChuAppIcon.image()
         setupMenu()
 
@@ -1515,6 +1517,8 @@ private enum AppSortOrder: Int {
             }
         }
     }
+
+    @objc private func toggleFromDock(_ notification: Notification) { toggleLauncher() }
 
     private func toggleLauncher() {
         if launcherTargetVisible {
