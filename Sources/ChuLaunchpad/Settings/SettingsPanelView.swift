@@ -810,6 +810,9 @@ enum SettingsTab {
     private let loginSwitch = NSSwitch()
     private let loginStatusIcon = NSImageView()
     private let loginStatusLabel = NSTextField(wrappingLabelWithString: "")
+    private let dockCard = FlippedView()
+    private let dockSwitch = NSSwitch()
+    private let dockStatusLabel = NSTextField(labelWithString: "正在检查…")
 
     // MARK: 关于页组件
     private let aboutPage = FlippedView()
@@ -856,6 +859,7 @@ enum SettingsTab {
     var onHotKeyChanged: ((LaunchHotKey?) -> Void)?
     var onRecordingStateChanged: ((Bool) -> Void)?
     var onLaunchAtLoginChanged: ((Bool) -> Void)?
+    var onDockPinChanged: ((Bool) -> Void)?
 
     private var dragStartMouseInParent: NSPoint?
     private var dragStartOrigin: NSPoint?
@@ -1117,13 +1121,27 @@ enum SettingsTab {
         loginStatusLabel.frame = NSRect(x: 42, y: 92, width: 380, height: 38)
         loginCard.addSubview(loginStatusLabel)
 
-        // 底部轻量化操作提示
-        let hint = NSTextField(labelWithString: "按 Esc 关闭设置 · 拖动窗口空白处可移动位置")
-        hint.font = .systemFont(ofSize: 11.5, weight: .regular)
-        hint.textColor = .tertiaryLabelColor
-        hint.alignment = .center
-        hint.frame = NSRect(x: 24, y: 328, width: 440, height: 18)
-        generalPage.addSubview(hint)
+        dockCard.frame = NSRect(x: 24, y: 326, width: 440, height: 72)
+        dockCard.wantsLayer = true
+        dockCard.layer?.cornerRadius = 14
+        dockCard.layer?.borderWidth = 1
+        generalPage.addSubview(dockCard)
+        let badge = GradientBadgeView(frame: NSRect(x: 18, y: 20, width: 32, height: 32), symbolName: "dock.rectangle", symbolPointSize: 14, colors: [.systemBlue, .systemIndigo], cornerRadius: 8)
+        dockCard.addSubview(badge)
+        makeLabel("固定到 Dock", x: 62, y: 15, size: 14.5, weight: .semibold, color: .labelColor, in: dockCard)
+        dockStatusLabel.font = .systemFont(ofSize: 11.5)
+        dockStatusLabel.textColor = .tertiaryLabelColor
+        dockStatusLabel.lineBreakMode = .byTruncatingTail
+        dockStatusLabel.frame = NSRect(x: 62, y: 39, width: 280, height: 18)
+        dockCard.addSubview(dockStatusLabel)
+        dockSwitch.controlSize = .regular
+        dockSwitch.target = self
+        dockSwitch.action = #selector(dockSwitchToggled)
+        let dockSize = dockSwitch.intrinsicContentSize
+        dockSwitch.frame = NSRect(x: 424 - dockSize.width, y: floor(36 - dockSize.height / 2), width: dockSize.width, height: dockSize.height)
+        dockSwitch.isEnabled = false
+        dockCard.addSubview(dockSwitch)
+
     }
 
     // MARK: - 构建“关于”页面
@@ -1433,6 +1451,19 @@ enum SettingsTab {
         label.frame = NSRect(x: 42, y: floor(centerY - textHeight / 2), width: 380, height: textHeight)
     }
 
+    func setDockPin(enabled: Bool?, busy: Bool = false, error: String? = nil) {
+        if let enabled { dockSwitch.state = enabled ? .on : .off }
+        dockSwitch.isEnabled = !busy && enabled != nil
+        dockStatusLabel.stringValue = error.map { "设置失败：" + $0 } ?? (busy ? "正在更新…" : (enabled == nil ? "无法读取 Dock 状态" : (enabled! ? "已固定，点击 Dock 图标可呼出" : "未固定，可随时开启")))
+        dockStatusLabel.toolTip = error
+    }
+
+    @objc private func dockSwitchToggled() {
+        dockSwitch.isEnabled = false
+        dockStatusLabel.stringValue = "正在更新…"
+        onDockPinChanged?(dockSwitch.state == .on)
+    }
+
     @objc private func loginSwitchToggled() {
         onLaunchAtLoginChanged?(loginSwitch.state == .on)
     }
@@ -1473,7 +1504,7 @@ enum SettingsTab {
             ? NSColor.white.withAlphaComponent(0.09)
             : NSColor.black.withAlphaComponent(0.07)
 
-        for card in [hotKeyCard, loginCard, productCard, updatesCard] {
+        for card in [hotKeyCard, loginCard, dockCard, productCard, updatesCard] {
             card.layer?.backgroundColor = cardFill.cgColor
             card.layer?.borderColor = cardBorder.cgColor
         }

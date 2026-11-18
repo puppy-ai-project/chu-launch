@@ -23,10 +23,28 @@ if let action = CommandLine.arguments.dropFirst().first, action.hasPrefix("--log
     }
 }
 
+
+#if !DEBUG
+if CommandLine.arguments.contains("--setup-dock") {
+    DockPin.installOnce(app: Bundle.main.bundleURL)
+    exit(0)
+}
+if !CommandLine.arguments.contains("--background"),
+   DockPin.isInstalled(Bundle.main.bundleURL, home: FileManager.default.homeDirectoryForCurrentUser),
+   !(UserDefaults(suiteName: DockPin.bundleID) ?? .standard).bool(forKey: DockPin.marker) {
+    let setup = Process()
+    setup.executableURL = Bundle.main.executableURL
+    setup.arguments = ["--setup-dock"]
+    setup.standardOutput = FileHandle.nullDevice
+    setup.standardError = FileHandle.nullDevice
+    try? setup.run()
+}
+#endif
+
 @MainActor
 final class EntryDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let agent = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/ChuLaunchAgent.app")
+        let agent = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Chu Launchpad.app")
         let configuration = NSWorkspace.OpenConfiguration()
         let background = CommandLine.arguments.contains("--background") || NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
         configuration.activates = false
@@ -39,7 +57,7 @@ final class EntryDelegate: NSObject, NSApplicationDelegate {
 }
 
 // A warm Dock click only needs IPC. Avoid initializing NSApplication on this path.
-let agent = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/ChuLaunchAgent.app")
+let agent = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Chu Launchpad.app")
 let background = CommandLine.arguments.contains("--background")
 if NSRunningApplication.runningApplications(withBundleIdentifier: "com.withqq.chu-launchpad.agent")
     .contains(where: { $0.isFinishedLaunching && $0.bundleURL?.standardizedFileURL == agent.standardizedFileURL }) {

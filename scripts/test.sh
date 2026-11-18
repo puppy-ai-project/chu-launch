@@ -14,3 +14,6 @@ swiftc -module-cache-path /tmp/swift-module-cache -swift-version 6 Sources/ChuLa
 
 swiftc -module-cache-path /tmp/swift-module-cache -swift-version 6 Sources/ChuLaunchpad/Settings/GitHubRelease.swift Sources/ChuLaunchpad/Settings/UpdateManager.swift Tests/UpdateRegression.swift -o "$test_binary"
 "$test_binary"
+
+swiftc -module-cache-path /tmp/swift-module-cache -swift-version 6 scripts/entry/DockPin.swift Tests/DockPinRegression.swift -o "$test_binary"
+"$test_binary"

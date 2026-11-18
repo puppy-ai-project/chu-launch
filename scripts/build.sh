@@ -17,10 +17,12 @@ if [ -n "${CHU_ARCH:-}" ]; then
     esac
     set -- "$@" -target "$CHU_ARCH-apple-macosx14.0"
 fi
-AGENT="$APP/Contents/Helpers/ChuLaunchAgent.app"
+AGENT="$APP/Contents/Helpers/Chu Launchpad.app"
+# Remove the obsolete generated helper so packaged builds contain only the current bundle.
+rm -rf "$APP/Contents/Helpers/ChuLaunchAgent.app"
 mkdir -p "$AGENT/Contents/MacOS" "$AGENT/Contents/Resources"
-swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/ChuLaunchpad/Core/*.swift Sources/ChuLaunchpad/Settings/*.swift Sources/ChuLaunchpad/main.swift -o "$AGENT/Contents/MacOS/ChuLaunchAgent"
-swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O scripts/entry/main.swift -o "$APP/Contents/MacOS/ChuLaunchpad"
+swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/ChuLaunchpad/Core/*.swift Sources/ChuLaunchpad/Settings/*.swift scripts/entry/DockPin.swift Sources/ChuLaunchpad/main.swift -o "$AGENT/Contents/MacOS/Chu Launchpad"
+swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O scripts/entry/DockPin.swift scripts/entry/main.swift -o "$APP/Contents/MacOS/ChuLaunchpad"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -73,7 +75,7 @@ iconutil -c icns "$iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 /usr/libexec/PlistBuddy -c 'Add :CFBundleIconFile string AppIcon' "$APP/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile AppIcon' "$APP/Contents/Info.plist"
 cp "$APP/Contents/Info.plist" "$AGENT/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.withqq.chu-launchpad.agent" "$AGENT/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ChuLaunchAgent" "$AGENT/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c 'Set :LSUIElement false' "$AGENT/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable Chu Launchpad" "$AGENT/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Set :LSUIElement true' "$AGENT/Contents/Info.plist"
 cp "$APP/Contents/Resources/AppIcon.icns" "$AGENT/Contents/Resources/"
 printf 'Built %s\n' "$APP"

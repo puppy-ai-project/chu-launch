@@ -255,7 +255,7 @@ enum AnimationHelper {
 }
 
 // MARK: - 全屏启动器窗口
-@MainActor final class LauncherWindow: NSWindow, @MainActor QLPreviewPanelDataSource {
+@MainActor final class LauncherWindow: NSPanel, @MainActor QLPreviewPanelDataSource {
     private var previewURL: NSURL?
 
     func previewApplication(at url: URL) {
@@ -1316,7 +1316,7 @@ private enum AppSortOrder: Int {
 
     private func checkInstalledVersion() {
         let agent = Bundle.main.bundleURL
-        guard agent.lastPathComponent == "ChuLaunchAgent.app" else { return }
+        guard ["Chu Launchpad.app", "ChuLaunchAgent.app"].contains(agent.lastPathComponent), agent.deletingLastPathComponent().lastPathComponent == "Helpers" else { return }
         let outer = agent.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         func installedVersion(_ bundle: URL, identifier: String) -> String? {
             guard let data = try? Data(contentsOf: bundle.appendingPathComponent("Contents/Info.plist")),
@@ -1348,6 +1348,8 @@ private enum AppSortOrder: Int {
     private let searchCapsule = SearchCapsuleView(frame: .zero)
     private let moreMenu = NSMenu()
     private var settingsPanel: SettingsPanelView?
+    private var dockStatusTimer: Timer?
+    private var dockStatusBusy = false
     private let hotKeyManager = GlobalHotKeyManager()
     private let updateManager = AppUpdateManager()
     private let moreButton = NSButton()
@@ -1376,6 +1378,8 @@ private enum AppSortOrder: Int {
     private var refreshTask: Task<Void, Never>?
     private var scanGeneration = 0
     private var lastWheelTurn = Date.distantPast
+    private var externalClickMonitor: Any?
+    private var externalClickGeneration = 0
     private var pointerDown: NSEvent?
     private var pointerDragging = false
     private var pointerIsBlank = false
@@ -1392,14 +1396,14 @@ private enum AppSortOrder: Int {
     private let logger = Logger(subsystem: "com.withqq.chu-launchpad.app", category: "launcher")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(.accessory)
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(toggleFromDock(_:)),
             name: Notification.Name("com.withqq.chu-launchpad.toggle"), object: nil, suspensionBehavior: .deliverImmediately)
         NSApp.applicationIconImage = ChuAppIcon.image()
         setupMenu()
 
         let screen = NSScreen.main ?? NSScreen.screens[0]
-        window = LauncherWindow(contentRect: mainWindowFrame(on: screen), styleMask: [.borderless], backing: .buffered, defer: false)
+        window = LauncherWindow(contentRect: mainWindowFrame(on: screen), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.animationBehavior = .none
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -1489,6 +1493,7 @@ private enum AppSortOrder: Int {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(volumeChanged), name: NSWorkspace.didMountNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(volumeChanged), name: NSWorkspace.didUnmountNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(spaceChanged), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(frontmostAppChanged(_:)), name: NSWorkspace.didActivateApplicationNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         wallpaperTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.checkInstalledVersion(); self?.refreshVisibleWallpaper() }
@@ -1600,7 +1605,41 @@ private enum AppSortOrder: Int {
         }
     }
 
-    @objc private func toggleFromDock(_ notification: Notification) { toggleLauncher() }
+    @objc private func toggleFromDock(_ notification: Notification) {
+        // A Dock click on our own launcher arrives as an external mouse event
+        // first; cancel its pending dismissal before toggling the window.
+        externalClickGeneration += 1
+        toggleLauncher()
+    }
+
+    private var outerAppURL: URL {
+        Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    }
+
+    private func refreshDockStatus() {
+        guard settingsPanel != nil, !dockStatusBusy else { return }
+        dockStatusBusy = true
+        let app = outerAppURL
+        Task {
+            let status = await Task.detached(priority: .utility) { try? DockPin.isPinned(app: app) }.value
+            dockStatusBusy = false
+            settingsPanel?.setDockPin(enabled: status)
+        }
+    }
+
+    private func changeDockPin(_ enabled: Bool) {
+        guard !dockStatusBusy else { return }
+        dockStatusBusy = true
+        let app = outerAppURL
+        Task {
+            let result = await Task.detached(priority: .utility) { () -> (Bool?, String?) in
+                do { try DockPin.setPinned(enabled, app: app); return (try DockPin.isPinned(app: app), nil) }
+                catch { return (try? DockPin.isPinned(app: app), error.localizedDescription) }
+            }.value
+            dockStatusBusy = false
+            settingsPanel?.setDockPin(enabled: result.0, error: result.1)
+        }
+    }
 
     private func toggleLauncher() {
         if launcherTargetVisible {
@@ -1618,12 +1657,14 @@ private enum AppSortOrder: Int {
         if let existing = settingsPanel {
             existing.selectTab(initialTab)
             existing.setLaunchAtLogin(enabled: LaunchAtLoginManager.isEnabled())
+            refreshDockStatus()
             window.makeFirstResponder(nil)
             return
         }
 
         let bounds = backgroundView.bounds
-        let panel = SettingsPanelView(frame: NSRect(x: floor(bounds.midX - 340), y: floor(bounds.midY - 210), width: 680, height: 420))
+        let panelHeight: CGFloat = 470
+        let panel = SettingsPanelView(frame: NSRect(x: floor(bounds.midX - 340), y: floor(bounds.midY - panelHeight / 2), width: 680, height: panelHeight))
         panel.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
         panel.selectTab(initialTab)
         panel.setHotKeyStatus(hotKeyManager.lastStatus)
@@ -1649,6 +1690,7 @@ private enum AppSortOrder: Int {
             let status = self.hotKeyManager.register(newHotKey)
             self.settingsPanel?.setHotKeyStatus(status)
         }
+        panel.onDockPinChanged = { [weak self] enabled in self?.changeDockPin(enabled) }
         panel.onLaunchAtLoginChanged = { [weak self] enabled in
             do {
                 try LaunchAtLoginManager.setEnabled(enabled)
@@ -1670,6 +1712,8 @@ private enum AppSortOrder: Int {
             panel?.cancelHotKeyRecording()
             _ = self?.hotKeyManager.resume()
             self?.settingsPanel = nil
+            self?.dockStatusTimer?.invalidate()
+            self?.dockStatusTimer = nil
             if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 backdrop?.removeFromSuperview()
                 self?.menuSettingsShade?.isHidden = true
@@ -1706,6 +1750,11 @@ private enum AppSortOrder: Int {
         }
 
         settingsPanel = panel
+        refreshDockStatus()
+        dockStatusTimer?.invalidate()
+        dockStatusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshDockStatus() }
+        }
         backdrop.addSubview(panel)
         backgroundView.addSubview(backdrop, positioned: .above, relativeTo: nil)
         pointerDown = nil
@@ -1787,6 +1836,19 @@ private enum AppSortOrder: Int {
     }
 
     private func setupEventMonitors() {
+        // A nonactivating panel can remain key when the already-frontmost app
+        // is clicked in the Dock, so an activation notification alone is not enough.
+        externalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.launcherTargetVisible, self.window.isVisible, !self.isLaunching else { return }
+                self.externalClickGeneration += 1
+                let generation = self.externalClickGeneration
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    guard let self, self.externalClickGeneration == generation, self.launcherTargetVisible else { return }
+                    self.hide()
+                }
+            }
+        }
         NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
             guard let self, event.window === self.window, self.window.isVisible, self.settingsPanel == nil, !self.isLaunching else { return event }
             switch event.type {
@@ -2040,7 +2102,6 @@ private enum AppSortOrder: Int {
             menuCover?.alphaValue = 0
             menuCover?.orderFrontRegardless()
             window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
             if openFolder == nil && settingsPanel == nil { searchCapsule.makeFirstResponder() }
         }
         transition(visible: true)
@@ -2094,6 +2155,13 @@ private enum AppSortOrder: Int {
         let hex = backgroundView.style.overlayColor.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         let rgb = UInt32(hex, radix: 16) ?? 0
         menuCoverTint?.layer?.backgroundColor = NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: backgroundView.style.overlayOpacity).cgColor
+    }
+
+    @objc private func frontmostAppChanged(_ notification: Notification) {
+        guard launcherTargetVisible,
+              let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        hide()
     }
 
     @objc private func volumeChanged() { scheduleRefresh() }
