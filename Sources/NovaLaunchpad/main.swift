@@ -510,20 +510,29 @@ enum AnimationHelper {
     private static func folderIcon(apps: [AppRecord], iconCache: NSCache<NSString, NSImage>) -> NSImage {
         let image = NSImage(size: NSSize(width: 128, height: 128))
         image.lockFocus()
-        let background = NSBezierPath(roundedRect: NSRect(x: 2, y: 2, width: 124, height: 124), xRadius: 31, yRadius: 31)
-        NSColor(white: 0.32, alpha: 0.9).setFill()
+        let glassRect = NSRect(x: 12, y: 12, width: 104, height: 104)
+        let background = NSBezierPath(roundedRect: glassRect, xRadius: 26, yRadius: 26)
+        NSColor.black.withAlphaComponent(0.13).setFill()
         background.fill()
-        NSColor.white.withAlphaComponent(0.25).setStroke()
-        background.lineWidth = 1
+        NSGradient(starting: NSColor.white.withAlphaComponent(0.10),
+                   ending: NSColor.clear)?.draw(in: background, angle: -90)
+        NSColor.black.withAlphaComponent(0.28).setStroke()
+        background.lineWidth = 0.8
         background.stroke()
-        let size: CGFloat = 27
-        let gap: CGFloat = 7
+        let rim = NSBezierPath(roundedRect: glassRect.insetBy(dx: 0.8, dy: 0.8),
+                               xRadius: 25.2, yRadius: 25.2)
+        NSColor.white.withAlphaComponent(0.17).setStroke()
+        rim.lineWidth = 0.7
+        rim.stroke()
+        let size: CGFloat = 25
+        let gap: CGFloat = 2
+        let inset = (128 - 3 * size - 2 * gap) / 2
         for (index, app) in apps.prefix(9).enumerated() {
             let key = app.path as NSString
             let icon = iconCache.object(forKey: key) ?? NSWorkspace.shared.icon(forFile: app.path)
             iconCache.setObject(icon, forKey: key)
-            let x = 16 + CGFloat(index % 3) * (size + gap)
-            let y = 128 - 16 - size - CGFloat(index / 3) * (size + gap)
+            let x = inset + CGFloat(index % 3) * (size + gap)
+            let y = 128 - inset - size - CGFloat(index / 3) * (size + gap)
             icon.draw(in: NSRect(x: x, y: y, width: size, height: size))
         }
         image.unlockFocus()
