@@ -42,6 +42,14 @@ enum SettingsTab {
         addSubview(iconView)
     }
 
+    func snapshotImage() -> NSImage {
+        let image = NSImage(size: bounds.size)
+        image.lockFocus()
+        layer?.render(in: NSGraphicsContext.current!.cgContext)
+        image.unlockFocus()
+        return image
+    }
+
     override func layout() {
         super.layout()
         gradientLayer.frame = bounds
@@ -1127,26 +1135,19 @@ enum SettingsTab {
         productCard.layer?.borderWidth = 1
         aboutPage.addSubview(productCard)
 
-        let appIconBadge = GradientBadgeView(
-            frame: NSRect(x: 18, y: 18, width: 56, height: 56),
-            symbolName: "square.grid.3x3.fill",
-            symbolPointSize: 25,
-            colors: [
-                NSColor(srgbRed: 0.22, green: 0.74, blue: 0.97, alpha: 1),
-                NSColor(srgbRed: 0.23, green: 0.51, blue: 0.96, alpha: 1),
-                NSColor(srgbRed: 0.39, green: 0.40, blue: 0.95, alpha: 1)
-            ],
-            cornerRadius: 14
-        )
-        let iconShadowHolder = NSView(frame: appIconBadge.frame)
+        let appIconView = NSImageView(frame: NSRect(x: 18, y: 18, width: 56, height: 56))
+        appIconView.image = NovaAppIcon.image(size: 512)
+        appIconView.imageScaling = .scaleProportionallyUpOrDown
+        let iconShadowHolder = NSView(frame: appIconView.frame)
         iconShadowHolder.wantsLayer = true
         iconShadowHolder.layer?.shadowColor = NSColor(srgbRed: 0.23, green: 0.51, blue: 0.96, alpha: 1).cgColor
         iconShadowHolder.layer?.shadowOpacity = 0.35
         iconShadowHolder.layer?.shadowRadius = 10
         iconShadowHolder.layer?.shadowOffset = CGSize(width: 0, height: -4)
-        appIconBadge.frame = iconShadowHolder.bounds
-        iconShadowHolder.addSubview(appIconBadge)
+        appIconView.frame = iconShadowHolder.bounds
+        iconShadowHolder.addSubview(appIconView)
         productCard.addSubview(iconShadowHolder)
+        NSApp.applicationIconImage = NovaAppIcon.image(size: 512)
 
         let titleField = makeLabel("Nova Launchpad", x: 90, y: 20, size: 18, weight: .bold, color: .labelColor, in: productCard)
 

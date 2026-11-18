@@ -1330,19 +1330,24 @@ private enum AppSortOrder: Int {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        NSApp.applicationIconImage = NovaAppIcon.image()
         setupMenu()
 
         let screen = NSScreen.main ?? NSScreen.screens[0]
-        window = LauncherWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window = LauncherWindow(contentRect: mainWindowFrame(on: screen), styleMask: [.borderless], backing: .buffered, defer: false)
         window.animationBehavior = .none
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isOpaque = false
         window.backgroundColor = .clear
+        window.hasShadow = false
+        window.hidesOnDeactivate = false
+        prepareMenuCover(on: screen)
 
-        // 原生桌面壁纸毛玻璃与磨砂背景
+        // 原生桌面壁纸毛玻璃与磨砂背景（按完整屏幕高度对齐绘制，与顶部 menuCover 无缝衔接）
         backgroundView.frame = window.contentView!.bounds
         backgroundView.autoresizingMask = [.width, .height]
+        backgroundView.setWallpaperCanvasSize(screen.frame.size)
         window.contentView = backgroundView
 
         // 顶部居中胶囊搜索栏
@@ -1878,8 +1883,21 @@ private enum AppSortOrder: Int {
         }
     }
 
+    private func menuBarHeight(on screen: NSScreen) -> CGFloat {
+        min(screen.frame.height, max(NSStatusBar.system.thickness, screen.frame.maxY - screen.visibleFrame.maxY))
+    }
+
+    private func mainWindowFrame(on screen: NSScreen) -> NSRect {
+        let frame = screen.frame
+        let height = menuBarHeight(on: screen)
+        // 主窗口上缘停在系统顶部菜单栏正下方，彻底避免触发 macOS 传统无边框全屏自动隐藏菜单栏规则；
+        // 顶部菜单栏区域由 menuCover 在同一坐标系下像素级无缝衔接。
+        return NSRect(x: frame.minX, y: frame.minY, width: frame.width, height: max(100, frame.height - height))
+    }
+
     private func showPrepared(on currentScreen: NSScreen) {
-        window.setFrame(currentScreen.frame, display: true)
+        window.setFrame(mainWindowFrame(on: currentScreen), display: true)
+        backgroundView.setWallpaperCanvasSize(currentScreen.frame.size)
         prepareMenuCover(on: currentScreen)
 
         let screenWidth = currentScreen.frame.width
@@ -1929,17 +1947,18 @@ private enum AppSortOrder: Int {
     // Cover only the menu bar, leaving the main window below the Dock's level.
     private func prepareMenuCover(on screen: NSScreen) {
         let frame = screen.frame
-        let height = min(frame.height, max(NSStatusBar.system.thickness, frame.maxY - screen.visibleFrame.maxY))
+        let height = menuBarHeight(on: screen)
         let rect = NSRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height)
         if menuCover == nil {
             let cover = NSWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false)
             cover.animationBehavior = .none
-            cover.level = .statusBar
+            cover.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
             cover.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
             cover.ignoresMouseEvents = false
             cover.isOpaque = false
             cover.backgroundColor = .clear
             cover.hasShadow = false
+            cover.hidesOnDeactivate = false
             let clip = MenuBarEventCaptureView(frame: NSRect(origin: .zero, size: rect.size))
             clip.onBlankClick = { [weak self] in
                 guard let self, self.settingsPanel == nil else { return }
