@@ -1,4 +1,4 @@
-# Nova Launchpad — macOS 全屏应用启动器技术方案
+# Chu Launchpad — macOS 全屏应用启动器技术方案
 
 版本：V1.0  
 目标平台：macOS 26/27（以目标机器实际版本验证）  
@@ -40,7 +40,7 @@
 ### 建议目录
 
 ```text
-NovaLaunchpad/
+ChuLaunchpad/
   App/
     AppDelegate.swift
     AppCoordinator.swift
@@ -118,8 +118,8 @@ struct AppRecord: Codable, Identifiable {
 建议存储路径：
 
 ```text
-~/Library/Application Support/NovaLaunchpad/layout.json
-~/Library/Application Support/NovaLaunchpad/settings.json
+~/Library/Application Support/ChuLaunchpad/layout.json
+~/Library/Application Support/ChuLaunchpad/settings.json
 ```
 
 写入采用临时文件 + 原子替换；解析失败时备份损坏文件并回退到默认布局。
@@ -203,4 +203,4 @@ struct AppRecord: Codable, Identifiable {
 
 ## 8. 给 Codex 的启动指令
 
-> 请根据本技术方案从零创建 Nova Launchpad macOS 原生应用。使用 Swift 6 + AppKit + NSCollectionView + Core Animation。先实现阶段一 MVP，保证可编译运行。优先实现流畅的全屏网格、Dock 单击唤起、应用自动发现与卸载后及时消失、搜索和分页。所有功能必须离线，不引入网络 SDK 或私有 API。先审查开发环境与目标 macOS 版本，给出阶段任务与文件结构，再逐项实现并测试；不要一次性堆叠所有功能。
+> 请根据本技术方案从零创建 Chu Launchpad macOS 原生应用。使用 Swift 6 + AppKit + NSCollectionView + Core Animation。先实现阶段一 MVP，保证可编译运行。优先实现流畅的全屏网格、Dock 单击唤起、应用自动发现与卸载后及时消失、搜索和分页。所有功能必须离线，不引入网络 SDK 或私有 API。先审查开发环境与目标 macOS 版本，给出阶段任务与文件结构，再逐项实现并测试；不要一次性堆叠所有功能。

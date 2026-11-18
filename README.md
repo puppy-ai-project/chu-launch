@@ -1,22 +1,22 @@
-# Nova Launchpad
+# Chu Launchpad
 
-Nova Launchpad 是一个开源的 macOS 应用启动器，使用 Swift 和 AppKit 原生构建。它从系统与用户的 Applications 目录中发现应用，以接近 Launchpad 的全屏网格展示，并提供毛玻璃壁纸、文件夹、搜索和流畅翻页体验。
+Chu Launchpad 是一个开源的 macOS 应用启动器，使用 Swift 和 AppKit 原生构建。它从系统与用户的 Applications 目录中发现应用，以接近 Launchpad 的全屏网格展示，并提供毛玻璃壁纸、文件夹、搜索和流畅翻页体验。
 
 [![许可证：Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 ## 实际运行效果
 
-以下截图来自 Nova Launchpad 实际运行界面：
+以下截图来自 Chu Launchpad 实际运行界面：
 
 ### 应用启动页
 
-![Nova Launchpad 应用网格与桌面壁纸背景](docs/images/launcher.png)
+![Chu Launchpad 应用网格与桌面壁纸背景](docs/images/launcher.png)
 
 ### 应用文件夹
 
-![Nova Launchpad 文件夹中的应用](docs/images/folder-apps.png)
+![Chu Launchpad 文件夹中的应用](docs/images/folder-apps.png)
 
-![Nova Launchpad 实用工具文件夹](docs/images/folder-tools.png)
+![Chu Launchpad 实用工具文件夹](docs/images/folder-tools.png)
 
 ## 功能
 
@@ -39,7 +39,7 @@ Nova Launchpad 是一个开源的 macOS 应用启动器，使用 Swift 和 AppKi
 
 ```sh
 ./scripts/build.sh
-open 'build/Nova Launchpad.app'
+open 'build/Chu Launchpad.app'
 ```
 
 运行回归检查：
@@ -53,13 +53,13 @@ open 'build/Nova Launchpad.app'
 本地生成 ZIP 更新包、DMG 安装包和 SHA-256 校验文件：
 
 ```sh
-NOVA_VERSION=1.2.3 sh scripts/package-release.sh
+CHU_VERSION=1.2.3 sh scripts/package-release.sh
 ```
 
 向 GitHub 推送 `vX.Y.Z` 格式的版本标签后，GitHub Actions 会自动构建安装包并创建 Release：
 
 ```sh
-git tag -a v1.2.3 -m "Nova Launchpad 1.2.3"
+git tag -a v1.2.3 -m "Chu Launchpad 1.2.3"
 git push origin v1.2.3
 ```
 

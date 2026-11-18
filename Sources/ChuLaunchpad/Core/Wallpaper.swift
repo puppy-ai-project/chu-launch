@@ -1,8 +1,8 @@
 import AppKit
 import CoreImage
 
-// Background parameters can be overridden in Application Support/NovaLaunchpad/background.json.
-struct NovaBackgroundStyle: Codable, Sendable {
+// Background parameters can be overridden in Application Support/ChuLaunchpad/background.json.
+struct ChuBackgroundStyle: Codable, Sendable {
     var blurRadius: Double = 33
     var brightness: Double = -0.22
     var saturation: Double = 1.32
@@ -12,12 +12,12 @@ struct NovaBackgroundStyle: Codable, Sendable {
     var hue: Double? = nil
     var animationDuration: Double = 0.28
 
-    static func load() -> NovaBackgroundStyle {
-        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NovaLaunchpad/background.json")
-        guard let data = try? Data(contentsOf: url), let style = try? JSONDecoder().decode(NovaBackgroundStyle.self, from: data),
+    static func load() -> ChuBackgroundStyle {
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ChuLaunchpad/background.json")
+        guard let data = try? Data(contentsOf: url), let style = try? JSONDecoder().decode(ChuBackgroundStyle.self, from: data),
               (0...150).contains(style.blurRadius), (-1...1).contains(style.brightness),
               (0...2).contains(style.saturation), (-3.1416...3.1416).contains(style.hue ?? 0), (0...1).contains(style.overlayOpacity),
-              (0.05...2).contains(style.animationDuration) else { return NovaBackgroundStyle() }
+              (0.05...2).contains(style.animationDuration) else { return ChuBackgroundStyle() }
         return style
     }
 }
@@ -33,7 +33,7 @@ struct WallpaperPlacement: Sendable {
 
 enum WallpaperBlurRenderer {
     static let context = CIContext(options: [.useSoftwareRenderer: false])
-    static func generate(url: URL, screenSize: CGSize, scaleFactor: CGFloat, placement: WallpaperPlacement, style: NovaBackgroundStyle) -> CGImage? {
+    static func generate(url: URL, screenSize: CGSize, scaleFactor: CGFloat, placement: WallpaperPlacement, style: ChuBackgroundStyle) -> CGImage? {
         guard let input = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]), !input.extent.isEmpty else { return nil }
         let width = min(2560, max(1, screenSize.width * scaleFactor))
         let height = width * screenSize.height / max(1, screenSize.width)

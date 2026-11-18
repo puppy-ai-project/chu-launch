@@ -68,7 +68,7 @@ struct Layout: Codable, Sendable {
 
 enum LayoutStore {
     static var defaultURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NovaLaunchpad/layout.json")
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ChuLaunchpad/layout.json")
     }
     static func load(from url: URL = defaultURL) -> Layout {
         guard FileManager.default.fileExists(atPath: url.path) else { return Layout() }

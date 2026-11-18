@@ -22,8 +22,8 @@ jobs:
 
       - name: Build release packages
         env:
-          NOVA_VERSION: ${{ steps.version.outputs.version }}
-          NOVA_BUILD_NUMBER: ${{ github.run_number }}
+          CHU_VERSION: ${{ steps.version.outputs.version }}
+          CHU_BUILD_NUMBER: ${{ github.run_number }}
         run: sh scripts/package-release.sh build/release
 
       - name: Publish GitHub Release
@@ -32,8 +32,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: >-
           gh release create "$GITHUB_REF_NAME"
-          build/release/Nova-Launchpad-"$VERSION"-mac.zip
-          build/release/Nova-Launchpad-"$VERSION"-mac.dmg
-          build/release/Nova-Launchpad-"$VERSION"-SHA256SUMS.txt
-          --title "Nova Launchpad $VERSION"
+          build/release/Chu-Launchpad-"$VERSION"-mac.zip
+          build/release/Chu-Launchpad-"$VERSION"-mac.dmg
+          build/release/Chu-Launchpad-"$VERSION"-SHA256SUMS.txt
+          --title "Chu Launchpad $VERSION"
           --generate-notes

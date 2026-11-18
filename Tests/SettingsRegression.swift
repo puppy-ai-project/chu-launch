@@ -20,7 +20,7 @@ import Foundation
         precondition(!LaunchHotKey.isValid(keyCode: UInt32(kVK_Command), modifiers: UInt32(cmdKey)), "modifier-only key should be rejected")
 
         // 3. 快捷键持久化测试（使用独立测试 suite）
-        let suiteName = "org.novalaunchpad.tests.\(UUID().uuidString)"
+        let suiteName = "com.withqq.chu-launchpad.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
@@ -39,28 +39,28 @@ import Foundation
 
         // 4. 开机自启 LaunchAgent 读写与路径同步测试
         let fm = FileManager.default
-        let tempDir = fm.temporaryDirectory.appendingPathComponent("NovaLaunchLoginTests-\(UUID().uuidString)")
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("ChuLaunchLoginTests-\(UUID().uuidString)")
         defer { try? fm.removeItem(at: tempDir) }
-        let plistURL = tempDir.appendingPathComponent("org.novalaunchpad.app.plist")
+        let plistURL = tempDir.appendingPathComponent("com.withqq.chu-launchpad.plist")
 
         precondition(!LaunchAtLoginManager.isEnabled(plistURL: plistURL), "launch at login defaults to disabled")
 
-        try LaunchAtLoginManager.setEnabled(true, executablePath: "/tmp/Old/NovaLaunchpad", plistURL: plistURL)
+        try LaunchAtLoginManager.setEnabled(true, executablePath: "/tmp/Old/ChuLaunchpad", plistURL: plistURL)
         precondition(LaunchAtLoginManager.isEnabled(plistURL: plistURL), "launch at login enabled after write")
 
         // 校验写入的 plist 包含 --background 参数和 RunAtLoad
         let data = try Data(contentsOf: plistURL)
         let dict = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
         let args = dict?["ProgramArguments"] as? [String]
-        precondition(args == ["/tmp/Old/NovaLaunchpad", "--background"], "launch agent passes --background argument")
+        precondition(args == ["/tmp/Old/ChuLaunchpad", "--background"], "launch agent passes --background argument")
         precondition((dict?["RunAtLoad"] as? Bool) == true, "RunAtLoad should be true")
 
         // 校验移动 App 路径后自动同步
-        LaunchAtLoginManager.syncExecutablePathIfNeeded(executablePath: "/Applications/Nova Launchpad.app/Contents/MacOS/NovaLaunchpad", plistURL: plistURL)
+        LaunchAtLoginManager.syncExecutablePathIfNeeded(executablePath: "/Applications/Chu Launchpad.app/Contents/MacOS/ChuLaunchpad", plistURL: plistURL)
         let syncedData = try Data(contentsOf: plistURL)
         let syncedDict = try PropertyListSerialization.propertyList(from: syncedData, format: nil) as? [String: Any]
         let syncedArgs = syncedDict?["ProgramArguments"] as? [String]
-        precondition(syncedArgs?.first == "/Applications/Nova Launchpad.app/Contents/MacOS/NovaLaunchpad", "moved executable path is synced")
+        precondition(syncedArgs?.first == "/Applications/Chu Launchpad.app/Contents/MacOS/ChuLaunchpad", "moved executable path is synced")
 
         // 校验关闭开机自启后 plist 被清理
         try LaunchAtLoginManager.setEnabled(false, plistURL: plistURL)

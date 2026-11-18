@@ -154,8 +154,8 @@ struct LaunchHotKey: Codable, Equatable, Sendable {
 
 // MARK: - 快捷键持久化存储
 enum HotKeyStore {
-    static let dataKey = "org.novalaunchpad.launchHotKey"
-    static let disabledKey = "org.novalaunchpad.launchHotKeyDisabled"
+    static let dataKey = "com.withqq.chu-launchpad.launchHotKey"
+    static let disabledKey = "com.withqq.chu-launchpad.launchHotKeyDisabled"
 
     /// 读取已保存的快捷键；首次使用时返回默认 Command + F3，显式停用时返回 nil
     static func load(from defaults: UserDefaults = .standard) -> LaunchHotKey? {
@@ -192,7 +192,7 @@ enum HotKeyRegistrationStatus: Equatable, Sendable {
 
 // MARK: - Carbon 全局热键管理器（无需辅助功能权限）
 @MainActor final class GlobalHotKeyManager {
-    private static let hotKeySignature: OSType = 0x4E4F5641 // 'NOVA'
+    private static let hotKeySignature: OSType = 0x43485550 // 'CHUP'
     private static let hotKeyIdentifier: UInt32 = 1
 
     nonisolated(unsafe) private var eventHandlerRef: EventHandlerRef?

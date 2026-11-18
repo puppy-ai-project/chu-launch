@@ -1,25 +1,26 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-APP="${1:-build/Nova Launchpad.app}"
-VERSION="${NOVA_VERSION:-0.1.0}"
-BUILD_NUMBER="${NOVA_BUILD_NUMBER:-1}"
+APP="${1:-build/Chu Launchpad.app}"
+VERSION="${CHU_VERSION:-1.0.0}"
+BUILD_NUMBER="${CHU_BUILD_NUMBER:-1}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-if [ "${NOVA_DEBUG:-0}" = 1 ]; then
+if [ "${CHU_DEBUG:-0}" = 1 ]; then
     set -- -D DEBUG
 else
     set --
 fi
-swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/NovaLaunchpad/Core/*.swift Sources/NovaLaunchpad/Settings/*.swift Sources/NovaLaunchpad/main.swift -o "$APP/Contents/MacOS/NovaLaunchpad"
+swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/ChuLaunchpad/Core/*.swift Sources/ChuLaunchpad/Settings/*.swift Sources/ChuLaunchpad/main.swift -o "$APP/Contents/MacOS/ChuLaunchpad"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleExecutable</key><string>NovaLaunchpad</string>
-<key>CFBundleIdentifier</key><string>org.novalaunchpad.app</string>
-<key>CFBundleName</key><string>Nova Launchpad</string>
+<key>CFBundleExecutable</key><string>ChuLaunchpad</string>
+<key>CFBundleIdentifier</key><string>com.withqq.chu-launchpad</string>
+<key>CFBundleName</key><string>Chu Launchpad</string>
+<key>CFBundleDisplayName</key><string>Chu Launchpad</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleShortVersionString</key><string>1.0.0</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>CFBundleDevelopmentRegion</key><string>en</string>
@@ -29,7 +30,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
-iconset="$(mktemp -d)/NovaLaunchpad.iconset"
+iconset="$(mktemp -d)/ChuLaunchpad.iconset"
 mkdir -p "$iconset"
 trap 'rm -rf "$(dirname "$iconset")"' EXIT
 cat > "$iconset/render.swift" <<'SWIFT'
@@ -37,14 +38,14 @@ import AppKit
 import CoreImage
 @main struct RenderIcon {
     static func main() throws {
-        let image = NovaAppIcon.image(size: 1024)
+        let image = ChuAppIcon.image(size: 1024)
         let rep = NSBitmapImageRep(data: image.tiffRepresentation!)!
         let data = rep.representation(using: .png, properties: [:])!
         try data.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
     }
 }
 SWIFT
-swiftc -module-cache-path /tmp/swift-module-cache -swift-version 6 Sources/NovaLaunchpad/Settings/AppIcon.swift "$iconset/render.swift" -o "$iconset/render-icon"
+swiftc -module-cache-path /tmp/swift-module-cache -swift-version 6 Sources/ChuLaunchpad/Settings/AppIcon.swift "$iconset/render.swift" -o "$iconset/render-icon"
 "$iconset/render-icon" "$iconset/source.png"
 sips -z 16 16 "$iconset/source.png" --out "$iconset/icon_16x16.png" >/dev/null
 sips -z 32 32 "$iconset/source.png" --out "$iconset/icon_16x16@2x.png" >/dev/null

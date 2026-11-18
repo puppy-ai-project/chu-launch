@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - 开机自启管理器 (用户级 LaunchAgent，适配本地未签名应用)
 enum LaunchAtLoginManager {
-    static let label = "org.novalaunchpad.app"
+    static let label = "com.withqq.chu-launchpad"
     static let backgroundArgument = "--background"
 
     static var defaultPlistURL: URL {

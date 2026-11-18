@@ -6,9 +6,9 @@ import QuartzCore
 
 #if DEBUG
 @MainActor final class BackgroundDebugPanel: NSWindowController {
-    private var style: NovaBackgroundStyle
-    private let onChange: (NovaBackgroundStyle) -> Void
-    init(style: NovaBackgroundStyle, onChange: @escaping (NovaBackgroundStyle) -> Void) {
+    private var style: ChuBackgroundStyle
+    private let onChange: (ChuBackgroundStyle) -> Void
+    init(style: ChuBackgroundStyle, onChange: @escaping (ChuBackgroundStyle) -> Void) {
         self.style = style
         self.onChange = onChange
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 260), styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
@@ -79,7 +79,7 @@ enum AnimationHelper {
 
 // The translucent window reveals the real desktop while the prepared blur fades in.
 @MainActor final class LauncherBackgroundView: NSView {
-    private(set) var style = NovaBackgroundStyle.load()
+    private(set) var style = ChuBackgroundStyle.load()
     private let wallpaperGroup = NSView()
     private let wallpaperImageView = NSImageView()
     private let opaqueBase = NSView()
@@ -173,7 +173,7 @@ enum AnimationHelper {
         wallpaperImageView.isHidden = usingFallback
     }
 
-    func setStyle(_ value: NovaBackgroundStyle) {
+    func setStyle(_ value: ChuBackgroundStyle) {
         style = value
         applyStyle()
         cache.removeAll()
@@ -432,7 +432,7 @@ enum AnimationHelper {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard let appRecord, !appRecord.path.hasPrefix("nova-folder:") else { return nil }
+        guard let appRecord, !appRecord.path.hasPrefix("chu-folder:") else { return nil }
         let menu = NSMenu()
         for (title, action) in [("打开", #selector(openFromMenu)), ("在访达中显示", #selector(revealFromMenu)),
                                 ("显示简介", #selector(showInfo)), ("快速查看", #selector(previewAppFromMenu)),
@@ -588,12 +588,12 @@ enum AnimationHelper {
         for app in apps {
             let key = app.path as NSString
             let icon: NSImage
-            if app.path.hasPrefix("nova-folder:") {
+            if app.path.hasPrefix("chu-folder:") {
                 icon = Self.folderIcon(apps: folders[app.name] ?? [], iconCache: iconCache)
             } else if let cached = iconCache.object(forKey: key) {
                 icon = cached
             } else {
-                let diskIcon = app.path.hasPrefix("nova-folder:") ? NSWorkspace.shared.icon(for: .folder) : NSWorkspace.shared.icon(forFile: app.path)
+                let diskIcon = app.path.hasPrefix("chu-folder:") ? NSWorkspace.shared.icon(for: .folder) : NSWorkspace.shared.icon(forFile: app.path)
                 diskIcon.size = NSSize(width: 128, height: 128)
                 iconCache.setObject(diskIcon, forKey: key)
                 icon = diskIcon
@@ -1081,7 +1081,7 @@ struct FolderAppearance: Codable, Sendable {
     var closeDuration: Double = 0.24
 
     static func load() -> FolderAppearance {
-        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NovaLaunchpad/folder.json")
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ChuLaunchpad/folder.json")
         guard let data = try? Data(contentsOf: url), let value = try? JSONDecoder().decode(Self.self, from: data),
               (0...80).contains(value.cornerRadius), (0...1).contains(value.backgroundOpacity),
               (0...80).contains(value.backdropBlurRadius), (0...1).contains(value.backdropDimOpacity),
@@ -1243,7 +1243,7 @@ private enum AppSortOrder: Int {
     case dateAscending = 1
     case name = 2
 
-    static let defaultsKey = "NovaLaunchpad.sortOrderCode"
+    static let defaultsKey = "ChuLaunchpad.sortOrderCode"
 
     static var current: AppSortOrder {
         guard let stored = UserDefaults.standard.object(forKey: defaultsKey) else { return .dateDescending }
@@ -1325,12 +1325,12 @@ private enum AppSortOrder: Int {
     private var pendingRefresh = false
     private var pendingQuery: String?
     private var backdropWarmup: Task<Void, Never>?
-    private let storageQueue = DispatchQueue(label: "org.novalaunchpad.storage", qos: .utility)
-    private let logger = Logger(subsystem: "org.novalaunchpad.app", category: "launcher")
+    private let storageQueue = DispatchQueue(label: "com.withqq.chu-launchpad.storage", qos: .utility)
+    private let logger = Logger(subsystem: "com.withqq.chu-launchpad.app", category: "launcher")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        NSApp.applicationIconImage = NovaAppIcon.image()
+        NSApp.applicationIconImage = ChuAppIcon.image()
         setupMenu()
 
         let screen = NSScreen.main ?? NSScreen.screens[0]
@@ -1688,7 +1688,7 @@ private enum AppSortOrder: Int {
         appMenu.addItem(withTitle: "背景调试…", action: #selector(showBackgroundDebug), keyEquivalent: "d").target = self
         #endif
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "退出 Nova Launchpad", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "退出 Chu Launchpad", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         NSApp.mainMenu = menu
     }
 
@@ -2092,7 +2092,7 @@ private enum AppSortOrder: Int {
             for app in filtered {
                 if let folder = app.folder {
                     if folderContents[folder] == nil {
-                        items.append(AppRecord(path: "nova-folder:" + folder, name: folder))
+                        items.append(AppRecord(path: "chu-folder:" + folder, name: folder))
                         folderContents[folder] = []
                     }
                     folderContents[folder, default: []].append(app)
@@ -2118,7 +2118,7 @@ private enum AppSortOrder: Int {
     }
 
     private func activate(_ app: AppRecord, from itemView: AppItemView? = nil) {
-        guard app.path.hasPrefix("nova-folder:") else { open(app, from: itemView); return }
+        guard app.path.hasPrefix("chu-folder:") else { open(app, from: itemView); return }
         guard let contents = folderContents[app.name] else { return }
         if openFolder != nil {
             if folderClosing && openFolder == app.name { animateFolder(opening: true) }

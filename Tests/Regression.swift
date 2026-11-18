@@ -3,7 +3,7 @@ import Foundation
 @main struct Regression {
     static func main() throws {
         let fm = FileManager.default
-        let root = fm.temporaryDirectory.appendingPathComponent("NovaTests-\(UUID().uuidString)")
+        let root = fm.temporaryDirectory.appendingPathComponent("ChuTests-\(UUID().uuidString)")
         defer { try? fm.removeItem(at: root) }
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         let app = root.appendingPathComponent("Example.app")

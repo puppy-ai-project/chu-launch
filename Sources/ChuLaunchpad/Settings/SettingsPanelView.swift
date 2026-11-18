@@ -839,8 +839,8 @@ enum SettingsTab {
 
     private let projectCard = InteractiveCardView(frame: .zero)
 
-    private let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
-    private static let repositoryURL = URL(string: "https://github.com/puppy-ai-project/nova-launch")!
+    private let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    private static let repositoryURL = URL(string: "https://github.com/puppy-ai-project/chu-launch")!
 
     private(set) var currentTab: SettingsTab = .general
     private var lastHotKeyStatus: HotKeyRegistrationStatus = .registered(.defaultHotKey)
@@ -968,7 +968,7 @@ enum SettingsTab {
         sidebarView.addSubview(generalTabButton)
         sidebarView.addSubview(aboutTabButton)
 
-        makeLabel("Nova Launchpad", x: 22, y: bounds.height - 34, size: 11, weight: .medium, color: .tertiaryLabelColor, in: sidebarView)
+        makeLabel("Chu Launchpad", x: 22, y: bounds.height - 34, size: 11, weight: .medium, color: .tertiaryLabelColor, in: sidebarView)
 
         // 右侧内容区 (488pt)
         let contentArea = FlippedView(frame: NSRect(x: sidebarWidth, y: 0, width: bounds.width - sidebarWidth, height: bounds.height))
@@ -1136,7 +1136,7 @@ enum SettingsTab {
         aboutPage.addSubview(productCard)
 
         let appIconView = NSImageView(frame: NSRect(x: 18, y: 18, width: 56, height: 56))
-        appIconView.image = NovaAppIcon.image(size: 512)
+        appIconView.image = ChuAppIcon.image(size: 512)
         appIconView.imageScaling = .scaleProportionallyUpOrDown
         let iconShadowHolder = NSView(frame: appIconView.frame)
         iconShadowHolder.wantsLayer = true
@@ -1147,9 +1147,9 @@ enum SettingsTab {
         appIconView.frame = iconShadowHolder.bounds
         iconShadowHolder.addSubview(appIconView)
         productCard.addSubview(iconShadowHolder)
-        NSApp.applicationIconImage = NovaAppIcon.image(size: 512)
+        NSApp.applicationIconImage = ChuAppIcon.image(size: 512)
 
-        let titleField = makeLabel("Nova Launchpad", x: 90, y: 20, size: 18, weight: .bold, color: .labelColor, in: productCard)
+        let titleField = makeLabel("Chu Launchpad", x: 90, y: 20, size: 18, weight: .bold, color: .labelColor, in: productCard)
 
         // 版本号胶囊徽章（与主标题垂直中心对齐）
         versionBadgeLabel.stringValue = "v\(version)"
@@ -1287,7 +1287,7 @@ enum SettingsTab {
         projectCard.addSubview(codeBadge)
 
         makeLabel("开源仓库 · GitHub", x: 62, y: 11, size: 13.5, weight: .medium, color: .labelColor, in: projectCard)
-        makeLabel("puppy-ai-project/nova-launch · 按 Esc 关闭设置", x: 62, y: 31, size: 11.5, weight: .regular, color: .tertiaryLabelColor, in: projectCard)
+        makeLabel("puppy-ai-project/chu-launch · 按 Esc 关闭设置", x: 62, y: 31, size: 11.5, weight: .regular, color: .tertiaryLabelColor, in: projectCard)
 
         let arrowConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
         let externalArrow = NSImageView(frame: NSRect(x: 404, y: 20, width: 18, height: 18))
@@ -1407,7 +1407,7 @@ enum SettingsTab {
             loginStatusIcon.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: nil)?.withSymbolConfiguration(config)
             loginStatusIcon.contentTintColor = .tertiaryLabelColor
             loginStatusLabel.textColor = .secondaryLabelColor
-            text = "未开启，开机后需手动打开 Nova Launchpad。"
+            text = "未开启，开机后需手动打开 Chu Launchpad。"
         }
 
         loginStatusLabel.stringValue = text

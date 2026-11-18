@@ -3,7 +3,7 @@ import CoreImage
 
 @main struct BackgroundRegression {
     static func main() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NovaBackground-\(UUID().uuidString)")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ChuBackground-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("wallpaper.png")
@@ -14,7 +14,7 @@ import CoreImage
         guard let source = context.makeImage(), let writer = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else { fatalError("image") }
         CGImageDestinationAddImage(writer, source, nil)
         precondition(CGImageDestinationFinalize(writer))
-        var style = NovaBackgroundStyle()
+        var style = ChuBackgroundStyle()
         style.blurRadius = 0; style.brightness = 0; style.saturation = 1
         let placement = WallpaperPlacement(scaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue, clip: false, red: 0, green: 1, blue: 0)
         guard let result = WallpaperBlurRenderer.generate(url: url, screenSize: CGSize(width: 100, height: 100), scaleFactor: 1, placement: placement, style: style), let check = CGContext(data: nil, width: 100, height: 100, bitsPerComponent: 8, bytesPerRow: 400, space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { fatalError("render") }

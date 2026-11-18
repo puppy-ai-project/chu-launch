@@ -1,18 +1,18 @@
 ---
-name: nova-launch-release
-description: Publish a NovaLaunch release by incrementing its patch version, committing all current changes, pushing the branch, packaging the app, and publishing through the repository's GitHub Actions release workflow.
+name: chu-launchpad-release
+description: Publish a Chu Launchpad release by incrementing its patch version, committing all current changes, pushing the branch, packaging the app, and publishing through the repository's GitHub Actions release workflow.
 ---
 
-# NovaLaunch Release
+# Chu Launchpad Release
 
-Use only in `/Users/ipuppy/dev/codex/NovaLaunch` when asked to prepare or publish a NovaLaunch release.
+Use only in `/Users/ipuppy/dev/codex/NovaLaunch` when asked to prepare or publish a Chu Launchpad release.
 
 ## Release sequence
 
-1. Confirm the repository root and `origin` is `https://github.com/puppy-ai-project/nova-launch.git`. Check `gh auth status` before starting remote operations.
-2. Fetch remote branches and tags. Find the highest stable `vMAJOR.MINOR.PATCH` tag across local and remote tags; ignore non-semver and prerelease tags. If no version tag exists, use `0.1.0` as the first release. Otherwise increment the patch component by one. Stop if the proposed tag already exists locally or remotely.
+1. Confirm the repository root and `origin` is `https://github.com/puppy-ai-project/chu-launch.git`. Check `gh auth status` before starting remote operations.
+2. Fetch remote branches and tags. Find the highest stable `vMAJOR.MINOR.PATCH` tag across local and remote tags; ignore non-semver and prerelease tags. If no version tag exists, use `1.0.0` as the first release. Otherwise increment the patch component by one. Stop if the proposed tag already exists locally or remotely.
 3. Inspect `git status` and the current branch. Review the current diff so the commit contents are visible. Stage all current, non-ignored changes with `git add -A`; commit them as `release: vX.Y.Z`. If there are no changes, do not create an empty commit. Never amend or rewrite an existing commit.
-4. Push the current branch to `origin` and verify it succeeded. Do not force push. Build the local release packages with `NOVA_VERSION=X.Y.Z sh scripts/package-release.sh build/release`; stop if packaging fails.
+4. Push the current branch to `origin` and verify it succeeded. Do not force push. Build the local release packages with `CHU_VERSION=X.Y.Z sh scripts/package-release.sh build/release`; stop if packaging fails.
 5. Create an annotated tag `vX.Y.Z` at the release commit and push that tag to `origin`. This triggers `.github/workflows/release.yml`, which builds the ZIP update archive, DMG installer, and SHA-256 file, then creates the GitHub Release. Do not run `gh release create` as well; it would race the workflow and duplicate release creation.
 6. Follow the workflow with `gh run list --workflow release.yml` and `gh run watch RUN_ID` (or equivalent `gh` commands). Confirm the run succeeded and the Release contains all three assets. Report the version, commit, tag, asset links, and any failure plainly.
 

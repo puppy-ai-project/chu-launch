@@ -1,7 +1,7 @@
 import AppKit
 import CoreImage
 
-enum NovaAppIcon {
+enum ChuAppIcon {
     static func image(size: CGFloat = 512) -> NSImage {
         let image = NSImage(size: NSSize(width: size, height: size))
         image.lockFocus()

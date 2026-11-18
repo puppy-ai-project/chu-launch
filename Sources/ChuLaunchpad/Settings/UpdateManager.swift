@@ -156,7 +156,7 @@ enum UpdateInstaller {
         NEW_APP="$2"
         TARGET_APP="$3"
         CLEANUP_DIR="$4"
-        BACKUP_APP="${TARGET_APP}.novabackup-$$"
+        BACKUP_APP="${TARGET_APP}.chubackup-$$"
 
         i=0
         while kill -0 "$PID" 2>/dev/null && [ "$i" -lt 100 ]; do
@@ -185,7 +185,7 @@ enum UpdateInstaller {
 
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")
-        helper.arguments = ["-c", script, "nova-updater", String(currentPID), extractedAppURL.path, targetAppURL.path, cleanupDirectory.path]
+        helper.arguments = ["-c", script, "chu-updater", String(currentPID), extractedAppURL.path, targetAppURL.path, cleanupDirectory.path]
         helper.standardInput = FileHandle.nullDevice
         helper.standardOutput = FileHandle.nullDevice
         helper.standardError = FileHandle.nullDevice
@@ -285,7 +285,7 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
 
     static var updatesDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Caches/NovaLaunchpad/Updates", isDirectory: true)
+            .appendingPathComponent("Library/Caches/ChuLaunchpad/Updates", isDirectory: true)
     }
 
     func checkForUpdates() {
@@ -301,7 +301,7 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
             do {
                 let release = try await GitHubRelease.latest()
                 if let release {
-                    let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+                    let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
                     if release.version.compare(current, options: .numeric) == .orderedDescending {
                         state = .available(version: release.version, downloadURL: release.downloadURL)
                     } else {
@@ -334,7 +334,7 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
         downloadGeneration += 1
         let generation = downloadGeneration
 
-        let fileName = targetURL.lastPathComponent.isEmpty ? "NovaLaunchpad-\(targetVersion).zip" : targetURL.lastPathComponent
+        let fileName = targetURL.lastPathComponent.isEmpty ? "ChuLaunchpad-\(targetVersion).zip" : targetURL.lastPathComponent
         let destinationURL = Self.updatesDirectory.appendingPathComponent(fileName)
 
         let delegate = UpdateDownloadSessionDelegate(destinationURL: destinationURL)
@@ -372,7 +372,7 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
         let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
 
         var request = URLRequest(url: targetURL)
-        request.setValue("NovaLaunchpad", forHTTPHeaderField: "User-Agent")
+        request.setValue("ChuLaunchpad", forHTTPHeaderField: "User-Agent")
         let task = session.downloadTask(with: request)
 
         downloadDelegate = delegate
@@ -400,7 +400,7 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
 
         let targetAppURL = Bundle.main.bundleURL
         let extractDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NovaLaunchpad-Install-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("ChuLaunchpad-Install-\(UUID().uuidString)", isDirectory: true)
 
         Task {
             do {

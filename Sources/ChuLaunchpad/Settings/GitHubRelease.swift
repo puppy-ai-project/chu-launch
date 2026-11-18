@@ -21,10 +21,10 @@ struct GitHubRelease: Decodable, Sendable {
     }
 
     static func latest() async throws -> Self? {
-        let endpoint = URL(string: "https://api.github.com/repos/puppy-ai-project/nova-launch/releases/latest")!
+        let endpoint = URL(string: "https://api.github.com/repos/puppy-ai-project/chu-launch/releases/latest")!
         var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("NovaLaunchpad", forHTTPHeaderField: "User-Agent")
+        request.setValue("ChuLaunchpad", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode
         if status == 404 { return nil }

@@ -12,7 +12,7 @@ import Foundation
 
         // 2. 构造真实 .app 并打包为 .zip，测试 UpdateInstaller 解压与定位
         let fm = FileManager.default
-        let root = fm.temporaryDirectory.appendingPathComponent("NovaUpdateTest-\(UUID().uuidString)", isDirectory: true)
+        let root = fm.temporaryDirectory.appendingPathComponent("ChuUpdateTest-\(UUID().uuidString)", isDirectory: true)
         defer { try? fm.removeItem(at: root) }
 
         let srcDir = root.appendingPathComponent("src", isDirectory: true)
