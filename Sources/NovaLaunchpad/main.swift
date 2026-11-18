@@ -249,6 +249,7 @@ enum AnimationHelper {
 @MainActor final class SearchCapsuleView: NSView, NSSearchFieldDelegate {
     private let searchField = NSSearchField()
     private let magnifier = NSImageView()
+    var onMore: (() -> Void)?
     var onQueryChanged: ((String) -> Void)?
     var onReturnPressed: (() -> Void)?
     var onEscapePressed: (() -> Void)?
@@ -1196,18 +1197,54 @@ struct FolderAppearance: Codable, Sendable {
 }
 
 // MARK: - 主应用程序代理 (AppDelegate)
+private enum AppSortOrder: Int {
+    case dateDescending = 0
+    case dateAscending = 1
+    case name = 2
+
+    static let defaultsKey = "NovaLaunchpad.sortOrderCode"
+
+    static var current: AppSortOrder {
+        guard let stored = UserDefaults.standard.object(forKey: defaultsKey) else { return .dateDescending }
+        guard let number = stored as? NSNumber, let order = AppSortOrder(rawValue: number.intValue) else {
+            UserDefaults.standard.removeObject(forKey: defaultsKey)
+            return .dateDescending
+        }
+        return order
+    }
+
+    var menuIdentifier: String {
+        switch self {
+        case .dateDescending: "sort-date-descending"
+        case .dateAscending: "sort-date-ascending"
+        case .name: "sort-name"
+        }
+    }
+}
+
+@MainActor final class MenuBarEventCaptureView: NSView {
+    var onBlankClick: (() -> Void)?
+    override func mouseDown(with event: NSEvent) { onBlankClick?() }
+    override func rightMouseDown(with event: NSEvent) { onBlankClick?() }
+    override func otherMouseDown(with event: NSEvent) { onBlankClick?() }
+}
+
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: LauncherWindow!
     private let backgroundView = LauncherBackgroundView(frame: .zero)
     private var menuCover: NSWindow?
     private var menuCoverImage: NSImageView?
     private var menuCoverTint: NSView?
+    private var menuSettingsShade: NSView?
     private var wallpaperTimer: Timer?
     #if DEBUG
     private var backgroundDebugPanel: BackgroundDebugPanel?
     private var debugRefreshTask: Task<Void, Never>?
     #endif
     private let searchCapsule = SearchCapsuleView(frame: .zero)
+    private let moreMenu = NSMenu()
+    private var settingsPanel: SettingsPanelView?
+    private let moreButton = NSButton()
     private let pagedContainer = PagedContainerView(frame: .zero)
     private let pageIndicator = PageIndicator()
     private let iconCache = NSCache<NSString, NSImage>()
@@ -1267,7 +1304,9 @@ struct FolderAppearance: Codable, Sendable {
         // 顶部居中胶囊搜索栏
         searchCapsule.onQueryChanged = { [weak self] query in
             self?.filter(query: query)
+            self?.updateMoreButton()
         }
+        configureMoreMenu()
         searchCapsule.onReturnPressed = { [weak self] in
             guard let self, let first = self.displayed.first else { return }
             self.activate(first)
@@ -1282,6 +1321,16 @@ struct FolderAppearance: Codable, Sendable {
             }
         }
         backgroundView.addSubview(searchCapsule)
+        moreButton.title = ""
+        moreButton.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "更多选项")
+        moreButton.contentTintColor = .white
+        moreButton.isBordered = false
+        moreButton.target = self
+        moreButton.action = #selector(showMoreMenu)
+        moreButton.wantsLayer = true
+        moreButton.layer?.backgroundColor = NSColor(white: 0.15, alpha: 0.45).cgColor
+        moreButton.layer?.cornerRadius = 16
+        backgroundView.addSubview(moreButton)
 
         // 多页全屏平移容器
         pagedContainer.onPageChanged = { [weak self] page in
@@ -1342,6 +1391,142 @@ struct FolderAppearance: Codable, Sendable {
         show()
     }
 
+    private func configureMoreMenu() {
+        let settings = NSMenuItem(title: "设置", action: #selector(openSettings), keyEquivalent: "")
+        settings.target = self
+        moreMenu.addItem(settings)
+        let sort = NSMenuItem(title: "排序方式", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        for (title, order) in [("添加日期降序", AppSortOrder.dateDescending), ("添加日期升序", .dateAscending), ("名称", .name)] {
+            let item = NSMenuItem(title: title, action: #selector(changeSort(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = order.rawValue
+            submenu.addItem(item)
+        }
+        sort.submenu = submenu
+        moreMenu.addItem(sort)
+        moreMenu.addItem(.separator())
+        let update = NSMenuItem(title: "检查更新", action: #selector(checkForUpdates), keyEquivalent: "")
+        update.target = self
+        moreMenu.addItem(update)
+        let restart = NSMenuItem(title: "重启应用", action: #selector(restartApp), keyEquivalent: "")
+        restart.target = self
+        moreMenu.addItem(restart)
+        let quit = NSMenuItem(title: "退出应用", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        moreMenu.addItem(quit)
+    }
+
+    @objc private func showMoreMenu() {
+        guard searchCapsule.stringValue.isEmpty else { return }
+        updateSortMenu()
+        moreMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: moreButton.bounds.minY), in: moreButton)
+    }
+
+    private func updateMoreButton() {
+        moreButton.isHidden = !searchCapsule.stringValue.isEmpty
+    }
+
+    private func updateSortMenu() {
+        let current = AppSortOrder.current.rawValue
+        moreMenu.items.first(where: { $0.title == "排序方式" })?.submenu?.items.forEach { item in
+            item.state = (item.representedObject as? Int) == current ? .on : .off
+        }
+    }
+
+    private func applyCurrentSort() {
+        switch AppSortOrder.current {
+        case .name:
+            apps.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        case .dateAscending:
+            apps.sort {
+                let left = $0.installedAt ?? .distantPast
+                let right = $1.installedAt ?? .distantPast
+                return left == right ? $0.name.localizedStandardCompare($1.name) == .orderedAscending : left < right
+            }
+        case .dateDescending:
+            apps.sort {
+                let left = $0.installedAt ?? .distantPast
+                let right = $1.installedAt ?? .distantPast
+                return left == right ? $0.name.localizedStandardCompare($1.name) == .orderedAscending : left > right
+            }
+        }
+    }
+
+    @objc private func openSettings() {
+        if settingsPanel == nil {
+            let bounds = backgroundView.bounds
+            let panel = SettingsPanelView(frame: NSRect(x: bounds.midX - 340, y: bounds.midY - 210, width: 680, height: 420))
+            panel.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+            panel.onCheckUpdates = { [weak self] in self?.performUpdateCheck() }
+            let backdrop = SettingsBackdropView(frame: bounds)
+            backdrop.wantsLayer = true
+            backdrop.layer?.backgroundColor = SettingsBackdropView.shade.cgColor
+            menuSettingsShade?.isHidden = false
+            backdrop.autoresizingMask = [.width, .height]
+            panel.onClose = { [weak self, weak backdrop] in
+                backdrop?.removeFromSuperview()
+                self?.menuSettingsShade?.isHidden = true
+                self?.settingsPanel = nil
+            }
+            settingsPanel = panel
+            backdrop.addSubview(panel)
+            backgroundView.addSubview(backdrop, positioned: .above, relativeTo: nil)
+            pointerDown = nil
+        }
+        window.makeFirstResponder(nil)
+    }
+
+    @objc private func changeSort(_ sender: NSMenuItem) {
+        let order: AppSortOrder
+        guard let rawValue = sender.representedObject as? Int,
+              let selected = AppSortOrder(rawValue: rawValue) else { return }
+        order = selected
+        UserDefaults.standard.set(order.rawValue, forKey: AppSortOrder.defaultsKey)
+        updateSortMenu()
+        if !apps.isEmpty {
+            applyCurrentSort()
+            filter(query: searchCapsule.stringValue)
+        }
+    }
+
+    @objc private func checkForUpdates() {
+        openSettings()
+        settingsPanel?.setStatus("正在检查更新…")
+        performUpdateCheck()
+    }
+
+    private func performUpdateCheck() {
+        settingsPanel?.setStatus("正在检查更新…")
+        Task {
+            do {
+                let url = URL(string: "https://api.github.com/repos/puppy-ai-project/nova-launch/releases/latest")!
+                var request = URLRequest(url: url)
+                request.setValue("NovaLaunchpad", forHTTPHeaderField: "User-Agent")
+                request.timeoutInterval = 15
+                let (data, _) = try await URLSession.shared.data(for: request)
+                let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                guard let tag = payload?["tag_name"] as? String else { throw URLError(.cannotParseResponse) }
+                let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+                let latest = tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+                let result = latest.compare(current, options: .numeric) == .orderedDescending
+                    ? "发现新版本 v\(latest)"
+                    : "当前已是最新版本（v\(current)）"
+                await MainActor.run { self.settingsPanel?.setStatus(result) }
+            } catch {
+                await MainActor.run { self.settingsPanel?.setStatus("检查更新失败：\(error.localizedDescription)") }
+            }
+        }
+    }
+
+    @objc private func restartApp() {
+        let url = Bundle.main.bundleURL
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = ["-n", url.path]
+        try? task.run()
+        NSApp.terminate(nil)
+    }
+
     private func setupMenu() {
         let menu = NSMenu()
         let appItem = NSMenuItem()
@@ -1359,7 +1544,7 @@ struct FolderAppearance: Codable, Sendable {
 
     private func setupEventMonitors() {
         NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
-            guard let self, event.window === self.window, self.window.isVisible, !self.isLaunching else { return event }
+            guard let self, event.window === self.window, self.window.isVisible, self.settingsPanel == nil, !self.isLaunching else { return event }
             switch event.type {
             case .leftMouseDown:
                 self.pointerDown = event
@@ -1370,7 +1555,7 @@ struct FolderAppearance: Codable, Sendable {
                 var isControl = false
                 while let view = target {
                     if let item = view as? AppItemView { self.pointerItem = item; isControl = true; break }
-                    if view is SearchCapsuleView || view is PageIndicator { isControl = true; break }
+                    if view is SearchCapsuleView || view is PageIndicator || view === self.moreButton { isControl = true; break }
                     target = view.superview
                 }
                 self.pointerIsBlank = !isControl
@@ -1406,6 +1591,10 @@ struct FolderAppearance: Codable, Sendable {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window.isVisible, self.window.attachedSheet == nil, event.window === self.window, !self.isLaunching else { return event }
 
+            if let panel = self.settingsPanel {
+                if event.keyCode == 53 { panel.onClose?(); return nil }
+                return event
+            }
             // Esc 键
             if event.keyCode == 53 {
                 if !self.searchCapsule.stringValue.isEmpty {
@@ -1441,7 +1630,7 @@ struct FolderAppearance: Codable, Sendable {
 
         // 轻扫手势
         NSEvent.addLocalMonitorForEvents(matching: .swipe) { [weak self] event in
-            guard let self, self.window.isVisible else { return event }
+            guard let self, self.window.isVisible, self.settingsPanel == nil else { return event }
             if event.deltaX > 0 {
                 self.activePages.previousPage()
             } else if event.deltaX < 0 {
@@ -1452,7 +1641,7 @@ struct FolderAppearance: Codable, Sendable {
 
         // 触控板平滑滑动与滚轮
         NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-            guard let self, self.window.isVisible, event.window === self.window else { return event }
+            guard let self, self.window.isVisible, self.settingsPanel == nil, event.window === self.window else { return event }
 
             if event.hasPreciseScrollingDeltas {
                 // 触控板手势实时跟手
@@ -1501,6 +1690,7 @@ struct FolderAppearance: Codable, Sendable {
             window.animator().alphaValue = visible ? 1 : 0
             menuCover?.animator().alphaValue = visible ? 1 : 0
         }
+        if visible { menuCover?.orderFrontRegardless() }
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
             guard let self, self.transitionGeneration == generation else { return }
             self.transitionInProgress = false
@@ -1553,6 +1743,8 @@ struct FolderAppearance: Codable, Sendable {
         let searchX = floor((screenWidth - searchWidth) / 2)
         let searchY = screenHeight - 68 - searchHeight
         searchCapsule.frame = NSRect(x: searchX, y: searchY, width: searchWidth, height: searchHeight)
+        moreButton.frame = NSRect(x: searchX + searchWidth + 10, y: searchY, width: 32, height: 32)
+        moreButton.isHidden = !searchCapsule.stringValue.isEmpty
 
         // 2. 底部分页指示器：居中，高度 20，位于 Dock 上方约 125pt
         let indicatorHeight: CGFloat = 20
@@ -1580,7 +1772,7 @@ struct FolderAppearance: Codable, Sendable {
             window.makeKeyAndOrderFront(nil)
             menuCover?.orderFrontRegardless()
             NSApp.activate(ignoringOtherApps: true)
-            if openFolder == nil { searchCapsule.makeFirstResponder() }
+            if openFolder == nil && settingsPanel == nil { searchCapsule.makeFirstResponder() }
         }
         transition(visible: true)
     }
@@ -1592,13 +1784,17 @@ struct FolderAppearance: Codable, Sendable {
         let rect = NSRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height)
         if menuCover == nil {
             let cover = NSWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false)
-            cover.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 1)
+            cover.level = .statusBar
             cover.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-            cover.ignoresMouseEvents = true
+            cover.ignoresMouseEvents = false
             cover.isOpaque = false
             cover.backgroundColor = .clear
             cover.hasShadow = false
-            let clip = NSView(frame: NSRect(origin: .zero, size: rect.size))
+            let clip = MenuBarEventCaptureView(frame: NSRect(origin: .zero, size: rect.size))
+            clip.onBlankClick = { [weak self] in
+                guard let self, self.settingsPanel == nil else { return }
+                if self.openFolder != nil { self.closeFolder() } else { self.hide() }
+            }
             clip.wantsLayer = true
             clip.layer?.masksToBounds = true
             clip.layer?.backgroundColor = NSColor(white: 0.25, alpha: 1).cgColor
@@ -1609,6 +1805,13 @@ struct FolderAppearance: Codable, Sendable {
             tint.wantsLayer = true
             tint.autoresizingMask = [.width, .height]
             clip.addSubview(tint)
+            let shade = NSView(frame: clip.bounds)
+            shade.autoresizingMask = [.width, .height]
+            shade.wantsLayer = true
+            shade.layer?.backgroundColor = SettingsBackdropView.shade.cgColor
+            shade.isHidden = settingsPanel == nil
+            clip.addSubview(shade)
+            menuSettingsShade = shade
             cover.contentView = clip
             menuCover = cover
             menuCoverImage = image
@@ -1689,6 +1892,7 @@ struct FolderAppearance: Codable, Sendable {
             if transitionInProgress || openFolder != nil { pendingRefresh = true; return }
             let oldPaths = layout.paths
             apps = layout.reconcile(result)
+            applyCurrentSort()
             loadedFolderItems = nil
             if oldPaths != layout.paths {
                 let snapshot = layout
