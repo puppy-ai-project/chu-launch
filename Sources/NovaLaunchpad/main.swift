@@ -1244,6 +1244,7 @@ private enum AppSortOrder: Int {
     private let searchCapsule = SearchCapsuleView(frame: .zero)
     private let moreMenu = NSMenu()
     private var settingsPanel: SettingsPanelView?
+    private let hotKeyManager = GlobalHotKeyManager()
     private let moreButton = NSButton()
     private let pagedContainer = PagedContainerView(frame: .zero)
     private let pageIndicator = PageIndicator()
@@ -1384,11 +1385,24 @@ private enum AppSortOrder: Int {
             Task { @MainActor in self?.refreshVisibleWallpaper() }
         }
 
+        // 注册全局呼出快捷键（默认 Command + F3）与开机自启路径同步
+        hotKeyManager.onTrigger = { [weak self] in
+            self?.toggleLauncher()
+        }
+        let savedHotKey = HotKeyStore.load()
+        let hotKeyStatus = hotKeyManager.register(savedHotKey)
+        if case .conflict(let key, let code) = hotKeyStatus {
+            logger.warning("Failed to register hotkey \(key.displayString, privacy: .public), status=\(code)")
+        }
+        LaunchAtLoginManager.syncExecutablePathIfNeeded()
+
         Task {
             layout = await Task.detached(priority: .utility) { LayoutStore.load() }.value
             refresh()
         }
-        show()
+        if !CommandLine.arguments.contains(LaunchAtLoginManager.backgroundArgument) {
+            show()
+        }
     }
 
     private func configureMoreMenu() {
@@ -1452,26 +1466,131 @@ private enum AppSortOrder: Int {
         }
     }
 
+    private func toggleLauncher() {
+        if launcherTargetVisible {
+            hide()
+        } else {
+            show()
+        }
+    }
+
     @objc private func openSettings() {
-        if settingsPanel == nil {
-            let bounds = backgroundView.bounds
-            let panel = SettingsPanelView(frame: NSRect(x: bounds.midX - 340, y: bounds.midY - 210, width: 680, height: 420))
-            panel.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
-            panel.onCheckUpdates = { [weak self] in self?.performUpdateCheck() }
-            let backdrop = SettingsBackdropView(frame: bounds)
-            backdrop.wantsLayer = true
-            backdrop.layer?.backgroundColor = SettingsBackdropView.shade.cgColor
-            menuSettingsShade?.isHidden = false
-            backdrop.autoresizingMask = [.width, .height]
-            panel.onClose = { [weak self, weak backdrop] in
+        openSettingsPanel(initialTab: .general)
+    }
+
+    private func openSettingsPanel(initialTab: SettingsTab) {
+        if let existing = settingsPanel {
+            existing.selectTab(initialTab)
+            window.makeFirstResponder(nil)
+            return
+        }
+
+        let bounds = backgroundView.bounds
+        let panel = SettingsPanelView(frame: NSRect(x: floor(bounds.midX - 340), y: floor(bounds.midY - 210), width: 680, height: 420))
+        panel.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+        panel.selectTab(initialTab)
+        panel.setHotKeyStatus(hotKeyManager.lastStatus)
+        panel.setLaunchAtLogin(enabled: LaunchAtLoginManager.isEnabled())
+
+        panel.onCheckUpdates = { [weak self] in self?.performUpdateCheck() }
+        panel.onRecordingStateChanged = { [weak self] recording in
+            guard let self else { return }
+            if recording {
+                self.hotKeyManager.suspend()
+            } else {
+                let status = self.hotKeyManager.resume()
+                self.settingsPanel?.setHotKeyStatus(status)
+            }
+        }
+        panel.onHotKeyChanged = { [weak self] newHotKey in
+            guard let self else { return }
+            HotKeyStore.save(newHotKey)
+            let status = self.hotKeyManager.register(newHotKey)
+            self.settingsPanel?.setHotKeyStatus(status)
+        }
+        panel.onLaunchAtLoginChanged = { [weak self] enabled in
+            do {
+                try LaunchAtLoginManager.setEnabled(enabled)
+                self?.settingsPanel?.setLaunchAtLogin(enabled: enabled)
+            } catch {
+                self?.settingsPanel?.setLaunchAtLogin(enabled: LaunchAtLoginManager.isEnabled(), errorMessage: error.localizedDescription)
+            }
+        }
+
+        let backdrop = SettingsBackdropView(frame: bounds)
+        backdrop.wantsLayer = true
+        backdrop.layer?.backgroundColor = SettingsBackdropView.shade.cgColor
+        backdrop.autoresizingMask = [.width, .height]
+
+        var closing = false
+        panel.onClose = { [weak self, weak backdrop, weak panel] in
+            guard !closing else { return }
+            closing = true
+            panel?.cancelHotKeyRecording()
+            _ = self?.hotKeyManager.resume()
+            self?.settingsPanel = nil
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 backdrop?.removeFromSuperview()
                 self?.menuSettingsShade?.isHidden = true
-                self?.settingsPanel = nil
+                self?.menuSettingsShade?.alphaValue = 1
+                return
             }
-            settingsPanel = panel
-            backdrop.addSubview(panel)
-            backgroundView.addSubview(backdrop, positioned: .above, relativeTo: nil)
-            pointerDown = nil
+            if let panel, let layer = panel.layer {
+                let center = CGPoint(x: panel.bounds.midX, y: panel.bounds.midY)
+                let shrink = CABasicAnimation(keyPath: "transform")
+                shrink.fromValue = CATransform3DIdentity
+                shrink.toValue = AnimationHelper.makeScaleTransform(scale: 0.96, center: center)
+                shrink.duration = 0.14
+                shrink.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                shrink.fillMode = .forwards
+                shrink.isRemovedOnCompletion = false
+                layer.add(shrink, forKey: "settingsDismissScale")
+            }
+            let shadeView = self?.menuSettingsShade
+            let backdropRef = backdrop
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.14
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                backdropRef?.animator().alphaValue = 0
+                shadeView?.animator().alphaValue = 0
+            }, completionHandler: { [weak self, weak backdropRef] in
+                Task { @MainActor in
+                    backdropRef?.removeFromSuperview()
+                    if self?.settingsPanel == nil {
+                        self?.menuSettingsShade?.isHidden = true
+                        self?.menuSettingsShade?.alphaValue = 1
+                    }
+                }
+            })
+        }
+
+        settingsPanel = panel
+        backdrop.addSubview(panel)
+        backgroundView.addSubview(backdrop, positioned: .above, relativeTo: nil)
+        pointerDown = nil
+
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            backdrop.alphaValue = 0
+            menuSettingsShade?.alphaValue = 0
+            menuSettingsShade?.isHidden = false
+            if let layer = panel.layer {
+                let center = CGPoint(x: panel.bounds.midX, y: panel.bounds.midY)
+                let pop = CABasicAnimation(keyPath: "transform")
+                pop.fromValue = AnimationHelper.makeScaleTransform(scale: 0.94, center: center)
+                pop.toValue = CATransform3DIdentity
+                pop.duration = 0.22
+                pop.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+                layer.add(pop, forKey: "settingsPresentScale")
+            }
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.18
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                backdrop.animator().alphaValue = 1
+                menuSettingsShade?.animator().alphaValue = 1
+            }
+        } else {
+            menuSettingsShade?.alphaValue = 1
+            menuSettingsShade?.isHidden = false
         }
         window.makeFirstResponder(nil)
     }
@@ -1490,7 +1609,7 @@ private enum AppSortOrder: Int {
     }
 
     @objc private func checkForUpdates() {
-        openSettings()
+        openSettingsPanel(initialTab: .about)
         settingsPanel?.setStatus("正在检查更新…")
         performUpdateCheck()
     }
@@ -1533,6 +1652,7 @@ private enum AppSortOrder: Int {
         menu.addItem(appItem)
         let appMenu = NSMenu()
         appItem.submenu = appMenu
+        appMenu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",").target = self
         appMenu.addItem(withTitle: "重新扫描应用", action: #selector(manualRefresh), keyEquivalent: "r").target = self
         #if DEBUG
         appMenu.addItem(withTitle: "背景调试…", action: #selector(showBackgroundDebug), keyEquivalent: "d").target = self
@@ -1592,6 +1712,10 @@ private enum AppSortOrder: Int {
             guard let self, self.window.isVisible, self.window.attachedSheet == nil, event.window === self.window, !self.isLaunching else { return event }
 
             if let panel = self.settingsPanel {
+                if panel.isRecordingHotKey {
+                    _ = panel.handleRecordingKeyDown(event)
+                    return nil
+                }
                 if event.keyCode == 53 { panel.onClose?(); return nil }
                 return event
             }
@@ -1673,6 +1797,7 @@ private enum AppSortOrder: Int {
     }
 
     func applicationDidResignActive(_ notification: Notification) {
+        settingsPanel?.cancelHotKeyRecording()
         hide()
     }
 

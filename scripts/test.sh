@@ -8,3 +8,6 @@ swiftc -module-cache-path /tmp/swift-module-cache -swift-version 6 Sources/NovaL
 
 swiftc -module-cache-path /tmp/swift-module-cache -swift-version 6 Sources/NovaLaunchpad/Core/Wallpaper.swift Tests/BackgroundRegression.swift -o "$test_binary"
 "$test_binary"
+
+swiftc -module-cache-path /tmp/swift-module-cache -swift-version 6 Sources/NovaLaunchpad/Core/HotKey.swift Sources/NovaLaunchpad/Core/LaunchAtLogin.swift Tests/SettingsRegression.swift -o "$test_binary"
+"$test_binary"
