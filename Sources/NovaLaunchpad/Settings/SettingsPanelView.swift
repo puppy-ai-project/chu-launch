@@ -178,7 +178,7 @@ enum SettingsTab {
     override var isEnabled: Bool {
         didSet { updateAppearanceColors() }
     }
-    private let defaultTitle: String
+    var defaultTitle: String
     var onTap: (() -> Void)?
 
     init(frame: NSRect, style: Style, title: String = "", symbolName: String? = nil, accessibilityLabel: String? = nil, pointSize: CGFloat = 11) {
@@ -681,6 +681,7 @@ enum SettingsTab {
 
     var isRecordingHotKey: Bool { hotKeyRecorder.isRecording }
 
+    private var releasePage: URL?
     var onCheckUpdates: (() -> Void)?
     var onClose: (() -> Void)?
     var onHotKeyChanged: ((LaunchHotKey?) -> Void)?
@@ -1016,7 +1017,9 @@ enum SettingsTab {
         makeLabel("从 GitHub Releases 查询最新正式版本", x: 62, y: 40, size: 11.5, weight: .regular, color: .tertiaryLabelColor, in: updatesCard)
 
         checkButton.onTap = { [weak self] in
-            self?.onCheckUpdates?()
+            guard let self else { return }
+            if let releasePage { NSWorkspace.shared.open(releasePage) }
+            else { onCheckUpdates?() }
         }
         updatesCard.addSubview(checkButton)
 
@@ -1287,7 +1290,9 @@ enum SettingsTab {
     }
 
     // MARK: - 更新状态展示（自动区分加载 / 最新 / 新版本 / 错误）
-    func setStatus(_ text: String) {
+    func setStatus(_ text: String, releasePage: URL? = nil) {
+        self.releasePage = releasePage
+        checkButton.defaultTitle = releasePage == nil ? "检查更新" : "下载新版"
         statusLabel.stringValue = text
         let config = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .semibold)
 

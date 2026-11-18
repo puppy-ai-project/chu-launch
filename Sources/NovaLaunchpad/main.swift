@@ -1625,25 +1625,28 @@ private enum AppSortOrder: Int {
         performUpdateCheck()
     }
 
+    private var checkingRelease = false
+
     private func performUpdateCheck() {
-        settingsPanel?.setStatus("正在检查更新…")
+        guard let panel = settingsPanel, !checkingRelease else { return }
+        checkingRelease = true
+        panel.setStatus("正在检查更新…")
         Task {
+            defer { checkingRelease = false }
             do {
-                let url = URL(string: "https://api.github.com/repos/puppy-ai-project/nova-launch/releases/latest")!
-                var request = URLRequest(url: url)
-                request.setValue("NovaLaunchpad", forHTTPHeaderField: "User-Agent")
-                request.timeoutInterval = 15
-                let (data, _) = try await URLSession.shared.data(for: request)
-                let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-                guard let tag = payload?["tag_name"] as? String else { throw URLError(.cannotParseResponse) }
-                let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
-                let latest = tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-                let result = latest.compare(current, options: .numeric) == .orderedDescending
-                    ? "发现新版本 v\(latest)"
-                    : "当前已是最新版本（v\(current)）"
-                await MainActor.run { self.settingsPanel?.setStatus(result) }
+                let release = try await GitHubRelease.latest()
+                if let release {
+                    let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+                    if release.version.compare(current, options: .numeric) == .orderedDescending {
+                        settingsPanel?.setStatus("发现新版本 v" + release.version, releasePage: release.html_url)
+                    } else {
+                        settingsPanel?.setStatus("当前已是最新版本（v" + current + "）")
+                    }
+                } else {
+                    settingsPanel?.setStatus("暂无公开的正式版本。")
+                }
             } catch {
-                await MainActor.run { self.settingsPanel?.setStatus("检查更新失败：\(error.localizedDescription)") }
+                settingsPanel?.setStatus("检查更新失败：" + error.localizedDescription)
             }
         }
     }
