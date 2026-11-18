@@ -219,6 +219,7 @@ enum AnimationHelper {
 // MARK: - 胶囊药丸风格搜索框 (Capsule Search Field)
 @MainActor final class SearchCapsuleView: NSView, NSSearchFieldDelegate {
     private let searchField = NSSearchField()
+    private let magnifier = NSImageView()
     var onQueryChanged: ((String) -> Void)?
     var onReturnPressed: (() -> Void)?
     var onEscapePressed: (() -> Void)?
@@ -245,6 +246,10 @@ enum AnimationHelper {
         // 原生 Launchpad 的半透明磨砂胶囊底色
         layer?.backgroundColor = NSColor(white: 0.15, alpha: 0.45).cgColor
 
+        (searchField.cell as? NSSearchFieldCell)?.searchButtonCell = nil
+        magnifier.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
+        magnifier.contentTintColor = .white
+        addSubview(magnifier)
         searchField.isBordered = false
         searchField.drawsBackground = false
         searchField.focusRingType = .none
@@ -267,7 +272,9 @@ enum AnimationHelper {
     override func layout() {
         super.layout()
         layer?.cornerRadius = bounds.height / 2
-        searchField.frame = NSRect(x: 12, y: floor((bounds.height - 24) / 2), width: max(0, bounds.width - 24), height: 24)
+        magnifier.frame = NSRect(x: 12, y: floor(bounds.midY - 8), width: 16, height: 16)
+        let height = ceil(searchField.intrinsicContentSize.height)
+        searchField.frame = NSRect(x: 36, y: floor(bounds.midY - height / 2), width: max(0, bounds.width - 48), height: height)
     }
 
     func makeFirstResponder() {
