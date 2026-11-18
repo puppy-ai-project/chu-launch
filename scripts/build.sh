@@ -2,6 +2,8 @@
 set -eu
 cd "$(dirname "$0")/.."
 APP="${1:-build/Nova Launchpad.app}"
+VERSION="${NOVA_VERSION:-0.1.0}"
+BUILD_NUMBER="${NOVA_BUILD_NUMBER:-1}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 if [ "${NOVA_DEBUG:-0}" = 1 ]; then
     set -- -D DEBUG
@@ -25,6 +27,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
 iconset="$(mktemp -d)/NovaLaunchpad.iconset"
 mkdir -p "$iconset"
 trap 'rm -rf "$(dirname "$iconset")"' EXIT

@@ -8,6 +8,8 @@ open 'build/Nova Launchpad.app'
 ./scripts/test.sh
 ```
 
+发布版本时，将 `v` 前缀的版本标签推送到 GitHub（例如 `v1.2.3`）。GitHub Actions 会自动构建并发布 ZIP 更新包、DMG 安装包和 SHA-256 校验文件。也可以在本机通过 `NOVA_VERSION=1.2.3 sh scripts/package-release.sh` 生成相同的安装产物。当前构建未签名或公证，macOS 首次打开时可能需要在“隐私与安全性”中确认打开。
+
 运行后输入名称搜索，回车打开当前页第一个结果，Esc 清除搜索或隐藏窗口；支持触控板两指滑动实时跟随与弹性吸附翻页，亦可点击底部分页指示圆点或按键盘左右方向键平滑翻页，点击空白背景可退出。应用隐藏后可点击 Dock 图标重新打开；菜单中的“重新扫描应用”可手动刷新，Command-Q 退出。
 
 布局保存在 `~/Library/Application Support/NovaLaunchpad/layout.json`。扫描目前覆盖系统、用户和全局 Applications 目录，使用 FSEvents 合并目录变更；尚未补充 Launch Services 注册应用及外置磁盘布局保留。当前构建为本地未签名版本。Swift Package 构建在当前机器的 Command Line Tools 上存在 PackageDescription 链接错误，提供的脚本使用 `swiftc` 直接构建。
