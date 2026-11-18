@@ -1034,6 +1034,12 @@ struct FolderAppearance: Codable, Sendable {
         let duration = reduced ? 0.12 : (opening ? appearance.openDuration : appearance.closeDuration)
         let curve = CAMediaTimingFunction(name: opening ? .easeOut : .easeInEaseOut)
         let opacity: Float = opening ? 1 : 0
+        // Fade the grid as one layer while the panel is still close to full size.
+        let contentDuration = reduced || opening ? duration : duration * 0.38
+        for layer in [pages.layer, title.layer, indicator.layer].compactMap({ $0 }) {
+            LauncherTransition.set(layer, keyPath: "opacity", value: opacity,
+                                   duration: initial ? 0 : contentDuration, curve: curve)
+        }
         for control in underlyingControls {
             if let layer = control.layer {
                 let scale: CGFloat = opening && !reduced ? 0.94 : 1
