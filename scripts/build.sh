@@ -15,7 +15,11 @@ else
     BUILD_FLAGS="development"
 fi
 APP="${1:-build/$APP_NAME}"
-VERSION="${CHU_VERSION:-1.0.0}"
+VERSION="${CHU_VERSION:-}"
+if [ -z "$VERSION" ]; then
+    VERSION=$(git tag --sort=-version:refname 2>/dev/null | sed -En 's/^v([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' | head -n 1)
+    VERSION="${VERSION:-1.0.0}"
+fi
 BUILD_NUMBER="${CHU_BUILD_NUMBER:-1}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 set --

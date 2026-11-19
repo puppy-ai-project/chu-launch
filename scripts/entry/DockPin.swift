@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 enum DockPin {
 #if CHU_DEVELOPMENT
@@ -13,6 +14,12 @@ enum DockPin {
     static let appDisplayName = "Chu Launchpad"
     static let toggleNotification = "com.withqq.chu-launchpad.toggle"
 #endif
+    static func togglePortName(for agent: URL) -> CFString {
+        let digest = SHA256.hash(data: Data(agent.standardizedFileURL.path.utf8))
+        let suffix = digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+        return "\(agentBundleID).\(getuid()).\(suffix)" as CFString
+    }
+
     static let marker = "dockPinAttemptedV1"
 
     static func isInstalled(_ app: URL, home: URL) -> Bool {

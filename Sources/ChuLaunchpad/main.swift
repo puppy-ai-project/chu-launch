@@ -204,11 +204,29 @@ enum AnimationHelper {
         currentKey = nil
     }
 
+    var wallpaperURLChanged: ((URL?) -> Void)?
+
+    private func screenKey(_ screen: NSScreen) -> String {
+        let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] ?? screen.localizedName
+        return "\(id)|\(screen.frame.size)@\(screen.backingScaleFactor)"
+    }
+
+    func useCachedWallpaper(for screen: NSScreen) -> Bool {
+        guard let image = lastByScreen[screenKey(screen)] else { return false }
+        if wallpaperImageView.image !== image {
+            currentKey = nil
+            displayWallpaper(image)
+        }
+        return true
+    }
+
     func updateWallpaper(for screen: NSScreen, completion: (@MainActor () -> Void)? = nil) {
         wallpaperGeneration += 1
         let generation = wallpaperGeneration
-        let screenID = String(describing: screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] ?? screen.localizedName)
-        guard let url = NSWorkspace.shared.desktopImageURL(for: screen) else {
+        let screenID = screenKey(screen)
+        let wallpaperURL = NSWorkspace.shared.desktopImageURL(for: screen)
+        wallpaperURLChanged?(wallpaperURL)
+        guard let url = wallpaperURL else {
             currentKey = nil
             displayWallpaper(lastByScreen[screenID])
             completion?(); return
@@ -645,12 +663,6 @@ enum AnimationHelper {
         itemViews.first { $0.appRecord == app }
     }
 
-    func resetAllItemAnimations() {
-        for itemView in itemViews {
-            itemView.resetLaunchAnimation()
-        }
-    }
-
     private static func folderIcon(apps: [AppRecord], iconCache: NSCache<NSString, NSImage>) -> NSImage {
         let image = NSImage(size: NSSize(width: 128, height: 128))
         image.lockFocus()
@@ -863,12 +875,6 @@ enum AnimationHelper {
             }
         }
         return nil
-    }
-
-    func resetAllItemAnimations() {
-        for pageView in pageViews {
-            pageView.resetAllItemAnimations()
-        }
     }
 
     override func layout() {
@@ -1384,6 +1390,7 @@ private enum AppSortOrder: Int {
     private var pointerDragging = false
     private var pointerIsBlank = false
     private weak var pointerItem: AppItemView?
+    private weak var launchingItem: AppItemView?
     private var isLaunching = false
     private var launcherTargetVisible = false
     private var showRequestGeneration = 0
@@ -1394,6 +1401,30 @@ private enum AppSortOrder: Int {
     private var backdropWarmup: Task<Void, Never>?
     private let storageQueue = DispatchQueue(label: "com.withqq.chu-launchpad.storage", qos: .utility)
     private let logger = Logger(subsystem: "com.withqq.chu-launchpad.app", category: "launcher")
+
+    private var dockTogglePort: CFMessagePort?
+    private var wallpaperFileSource: DispatchSourceFileSystemObject?
+    private var watchedWallpaper: URL?
+
+    private func watchWallpaperFile(_ url: URL?) {
+        guard watchedWallpaper != url else { return }
+        wallpaperFileSource?.cancel()
+        wallpaperFileSource = nil
+        watchedWallpaper = nil
+        guard let url else { return }
+        let fd = Darwin.open(url.path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete], queue: .main)
+        source.setCancelHandler { Darwin.close(fd) }
+        source.setEventHandler { [weak self] in
+            guard let self, self.watchedWallpaper == url else { return }
+            self.watchWallpaperFile(nil)
+            self.refreshVisibleWallpaper()
+        }
+        watchedWallpaper = url
+        wallpaperFileSource = source
+        source.resume()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -1525,6 +1556,18 @@ private enum AppSortOrder: Int {
         updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.updateManager.checkForUpdatesIfNeeded() }
         }
+        var context = CFMessagePortContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
+        dockTogglePort = CFMessagePortCreateLocal(nil, DockPin.togglePortName(for: Bundle.main.bundleURL), { _, _, _, info in
+            guard let info else { return nil }
+            MainActor.assumeIsolated {
+                Unmanaged<AppDelegate>.fromOpaque(info).takeUnretainedValue().handleDockToggle()
+            }
+            return nil
+        }, &context, nil)
+        if let dockTogglePort {
+            CFMessagePortSetDispatchQueue(dockTogglePort, .main)
+        }
+        backgroundView.wallpaperURLChanged = { [weak self] in self?.watchWallpaperFile($0) }
         let savedHotKey = HotKeyStore.load()
         let hotKeyStatus = hotKeyManager.register(savedHotKey)
         if case .conflict(let key, let code) = hotKeyStatus {
@@ -1546,6 +1589,8 @@ private enum AppSortOrder: Int {
         refresh()
         if !CommandLine.arguments.contains(LaunchAtLoginManager.backgroundArgument) {
             show()
+        } else {
+            refreshVisibleWallpaper()
         }
     }
 
@@ -1633,6 +1678,10 @@ private enum AppSortOrder: Int {
     }
 
     @objc private func toggleFromDock(_ notification: Notification) {
+        handleDockToggle()
+    }
+
+    private func handleDockToggle() {
         // A Dock click on our own launcher arrives as an external mouse event
         // first; cancel its pending dismissal before toggling the window.
         externalClickGeneration += 1
@@ -2076,16 +2125,19 @@ private enum AppSortOrder: Int {
             transition(visible: true)
             return
         }
-        updateManager.checkForUpdatesIfNeeded()
         showRequestGeneration += 1
         let request = showRequestGeneration
         launcherTargetVisible = true
         let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main ?? NSScreen.screens[0]
-        backgroundView.updateWallpaper(for: screen) { [weak self] in
-            guard let self, self.showRequestGeneration == request, self.launcherTargetVisible else { return }
-            self.menuCoverImage?.image = self.backgroundView.preparedWallpaper
+        if backgroundView.useCachedWallpaper(for: screen) {
+            showPrepared(on: screen)
+        } else {
+            backgroundView.updateWallpaper(for: screen) { [weak self] in
+                guard let self, self.showRequestGeneration == request, self.launcherTargetVisible else { return }
+                self.showPrepared(on: screen)
+            }
         }
-        showPrepared(on: screen)
+        updateManager.checkForUpdatesIfNeeded()
     }
 
     private func menuBarHeight(on screen: NSScreen) -> CGFloat {
@@ -2101,7 +2153,8 @@ private enum AppSortOrder: Int {
     }
 
     private func showPrepared(on currentScreen: NSScreen) {
-        window.setFrame(mainWindowFrame(on: currentScreen), display: true)
+        let frame = mainWindowFrame(on: currentScreen)
+        if window.frame != frame { window.setFrame(frame, display: true) }
         backgroundView.setWallpaperCanvasSize(currentScreen.frame.size)
         prepareMenuCover(on: currentScreen)
 
@@ -2133,7 +2186,8 @@ private enum AppSortOrder: Int {
 
         layoutFolderPanel()
         pagedContainer.layoutSubtreeIfNeeded()
-        pagedContainer.resetAllItemAnimations()
+        launchingItem?.resetLaunchAnimation()
+        launchingItem = nil
         isLaunching = false
 
         searchCapsule.wantsLayer = true
@@ -2191,7 +2245,7 @@ private enum AppSortOrder: Int {
             menuCoverImage = image
             menuCoverTint = tint
         }
-        menuCover?.setFrame(rect, display: true)
+        if menuCover?.frame != rect { menuCover?.setFrame(rect, display: true) }
         menuCoverImage?.frame = NSRect(x: 0, y: height - frame.height, width: frame.width, height: frame.height)
         menuCoverImage?.image = backgroundView.preparedWallpaper
         let hex = backgroundView.style.overlayColor.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
@@ -2217,7 +2271,9 @@ private enum AppSortOrder: Int {
         }
     }
     private func refreshVisibleWallpaper() {
-        guard window.isVisible, launcherTargetVisible, !transitionInProgress, let screen = window.screen else { return }
+        guard !transitionInProgress, window.isVisible || !launcherTargetVisible else { return }
+        let target = window.isVisible ? window.screen : NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+        guard let screen = target ?? NSScreen.main else { return }
         backgroundView.updateWallpaper(for: screen) { [weak self] in
             guard let self, self.window.isVisible, self.launcherTargetVisible else { return }
             self.menuCoverImage?.image = self.backgroundView.preparedWallpaper
@@ -2398,6 +2454,7 @@ private enum AppSortOrder: Int {
 
         let targetItemView = itemView ?? activePages.findItemView(for: app)
 
+        launchingItem = targetItemView
         let finishLaunch: @MainActor () -> Void = { [weak self] in
             guard let self else { return }
             NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: app.path), configuration: NSWorkspace.OpenConfiguration())
@@ -2405,6 +2462,7 @@ private enum AppSortOrder: Int {
             self.menuCover?.orderOut(nil)
             self.window.alphaValue = 1.0
             targetItemView?.resetLaunchAnimation()
+            self.launchingItem = nil
             self.isLaunching = false
         }
 

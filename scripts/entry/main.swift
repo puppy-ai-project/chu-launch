@@ -60,6 +60,10 @@ final class EntryDelegate: NSObject, NSApplicationDelegate {
 // A warm Dock click only needs IPC. Avoid initializing NSApplication on this path.
 let agent = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/\(DockPin.appDisplayName).app")
 let background = CommandLine.arguments.contains("--background")
+if !background, let port = CFMessagePortCreateRemote(nil, DockPin.togglePortName(for: agent)),
+   CFMessagePortSendRequest(port, 1, nil, 0, 0, nil, nil) == kCFMessagePortSuccess {
+    exit(0)
+}
 if NSRunningApplication.runningApplications(withBundleIdentifier: DockPin.agentBundleID)
     .contains(where: { $0.isFinishedLaunching && $0.bundleURL?.standardizedFileURL == agent.standardizedFileURL }) {
     if !background {
