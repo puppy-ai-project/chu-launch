@@ -311,6 +311,7 @@ enum AnimationHelper {
 @MainActor final class SearchCapsuleView: NSView, NSSearchFieldDelegate {
     private let searchField = NSSearchField()
     private let magnifier = NSImageView()
+    private let clearButton = NSButton()
     var onMore: (() -> Void)?
     var onQueryChanged: ((String) -> Void)?
     private var lastQuery = ""
@@ -342,7 +343,11 @@ enum AnimationHelper {
         // 原生 Launchpad 的半透明磨砂胶囊底色
         layer?.backgroundColor = NSColor(white: 0.15, alpha: 0.45).cgColor
 
-        (searchField.cell as? NSSearchFieldCell)?.searchButtonCell = nil
+        if let cell = searchField.cell as? NSSearchFieldCell {
+            cell.searchButtonCell = nil
+            // Use a separate control so the clear target never overlaps the text editor.
+            cell.cancelButtonCell = nil
+        }
         magnifier.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
         magnifier.contentTintColor = .white
         addSubview(magnifier)
@@ -363,6 +368,17 @@ enum AnimationHelper {
         searchField.placeholderAttributedString = NSAttributedString(string: "搜索应用", attributes: placeholderAttributes)
 
         addSubview(searchField)
+
+        clearButton.title = ""
+        clearButton.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "清除搜索")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
+        clearButton.contentTintColor = NSColor.white.withAlphaComponent(0.62)
+        clearButton.isBordered = false
+        clearButton.target = self
+        clearButton.action = #selector(clearSearch(_:))
+        clearButton.setAccessibilityLabel("清除搜索")
+        clearButton.isHidden = true
+        addSubview(clearButton)
     }
 
     override func layout() {
@@ -370,7 +386,8 @@ enum AnimationHelper {
         layer?.cornerRadius = bounds.height / 2
         magnifier.frame = NSRect(x: 12, y: floor(bounds.midY - 8), width: 16, height: 16)
         let height = ceil(searchField.intrinsicContentSize.height)
-        searchField.frame = NSRect(x: 36, y: floor(bounds.midY - height / 2), width: max(0, bounds.width - 48), height: height)
+        searchField.frame = NSRect(x: 36, y: floor(bounds.midY - height / 2), width: max(0, bounds.width - 72), height: height)
+        clearButton.frame = NSRect(x: bounds.maxX - 28, y: floor(bounds.midY - 9), width: 18, height: 18)
     }
 
     func makeFirstResponder() {
@@ -382,14 +399,29 @@ enum AnimationHelper {
     }
 
     func searchFieldDidEndSearching(_ sender: NSSearchField) {
-        DispatchQueue.main.async { [weak self] in self?.publishQuery() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.clearQuery()
+        }
     }
 
     private func publishQuery() {
         let query = searchField.stringValue
+        clearButton.isHidden = query.isEmpty
         guard query != lastQuery else { return }
         lastQuery = query
         onQueryChanged?(query)
+    }
+
+    @objc private func clearSearch(_ sender: Any?) {
+        clearQuery()
+    }
+
+    private func clearQuery() {
+        guard !searchField.stringValue.isEmpty else { return }
+        window?.makeFirstResponder(searchField)
+        searchField.stringValue = ""
+        publishQuery()
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
