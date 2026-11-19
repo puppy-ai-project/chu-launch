@@ -60,11 +60,11 @@ open 'build/Chu Launchpad dev.app'
 本地分别生成 Apple Silicon（arm64）和 Intel（x64）的 ZIP 更新包、DMG 安装包及 SHA-256 校验文件：
 
 ```sh
-CHU_VERSION=1.2.3 CHU_ARCH=arm64 sh scripts/package-release.sh
-CHU_VERSION=1.2.3 CHU_ARCH=x86_64 sh scripts/package-release.sh
+CHU_ARCH=arm64 sh scripts/package-release.sh
+CHU_ARCH=x86_64 sh scripts/package-release.sh
 ```
 
-向 GitHub 推送 `vX.Y.Z` 格式的版本标签后，GitHub Actions 会自动构建 arm64 与 Intel x64 安装包并创建 Release：
+版本号统一记录在仓库根目录的 `VERSION` 文件中；About 页面从应用 `Info.plist` 读取同一个版本值。发布前更新 `VERSION`，并推送匹配的 `vX.Y.Z` 标签。GitHub Actions 会校验标签与文件一致，再构建 arm64 与 Intel x64 安装包并创建 Release：
 
 ```sh
 git tag -a v1.2.3 -m "Chu Launchpad 1.2.3"

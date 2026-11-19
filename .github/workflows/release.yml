@@ -18,11 +18,21 @@ jobs:
       - name: Set release version
         id: version
         shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){2}$ ]]; then
+            echo "VERSION must be a semantic version such as 1.2.3" >&2
+            exit 1
+          fi
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$tag_version" != "$version" ]]; then
+            echo "Release tag v$tag_version does not match VERSION file ($version)" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Build release packages
         env:
-          CHU_VERSION: ${{ steps.version.outputs.version }}
           CHU_BUILD_NUMBER: ${{ github.run_number }}
         run: |
           CHU_ARCH=arm64 sh scripts/package-release.sh build/release

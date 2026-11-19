@@ -842,7 +842,7 @@ enum SettingsTab {
 
     private let projectCard = InteractiveCardView(frame: .zero)
 
-    private let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    private let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
     private static let repositoryURL = URL(string: "https://github.com/puppy-ai-project/chu-launch")!
 
     private(set) var currentTab: SettingsTab = .general
@@ -1171,7 +1171,7 @@ enum SettingsTab {
         let titleField = makeLabel(DockPin.appDisplayName, x: 90, y: 20, size: 18, weight: .bold, color: .labelColor, in: productCard)
 
         // 版本号胶囊徽章（与主标题垂直中心对齐）
-        versionBadgeLabel.stringValue = "v\(version)"
+        versionBadgeLabel.stringValue = version.map { "v\($0)" } ?? "未知"
         versionBadgeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
         versionBadgeLabel.sizeToFit()
         let badgeWidth = ceil(versionBadgeLabel.frame.width) + 14

@@ -2,10 +2,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION="${CHU_VERSION:?Set CHU_VERSION, for example 1.2.3}"
-case "$VERSION" in
-    *[!0-9.]*|.*|*.|*..*) echo "CHU_VERSION must be a numeric version such as 1.2.3" >&2; exit 2 ;;
-esac
+VERSION=$(tr -d '[:space:]' < VERSION)
+if ! printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "VERSION must contain a semantic version such as 1.2.3" >&2
+    exit 2
+fi
 OUTPUT_DIR="${1:-build/release}"
 ARCH="${CHU_ARCH:-$(uname -m)}"
 APP_NAME="Chu Launchpad.app"
@@ -20,7 +21,7 @@ STAGING_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGING_DIR"' EXIT HUP INT TERM
 
 mkdir -p "$OUTPUT_DIR"
-CHU_RELEASE=1 CHU_VERSION="$VERSION" CHU_BUILD_NUMBER="${CHU_BUILD_NUMBER:-1}" CHU_ARCH="$ARCH" sh scripts/build.sh "$APP_PATH"
+CHU_RELEASE=1 CHU_BUILD_NUMBER="${CHU_BUILD_NUMBER:-1}" CHU_ARCH="$ARCH" sh scripts/build.sh "$APP_PATH"
 
 ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$OUTPUT_DIR/Chu-Launchpad-$VERSION-mac-$ARCH_SUFFIX.zip"
 cp -R "$APP_PATH" "$STAGING_DIR/$APP_NAME"

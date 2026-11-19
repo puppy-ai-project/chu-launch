@@ -316,7 +316,11 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
             do {
                 let release = try await GitHubRelease.latest()
                 if let release {
-                    let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
+                    guard let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+                          !current.isEmpty else {
+                        state = .failed(message: "无法从应用 Info.plist 读取当前版本号。", retryURL: nil, retryVersion: nil)
+                        return
+                    }
                     if release.version.compare(current, options: .numeric) == .orderedDescending {
                         state = .available(version: release.version, downloadURL: release.downloadURL)
                     } else {

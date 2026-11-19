@@ -15,10 +15,10 @@ else
     BUILD_FLAGS="development"
 fi
 APP="${1:-build/$APP_NAME}"
-VERSION="${CHU_VERSION:-}"
-if [ -z "$VERSION" ]; then
-    VERSION=$(git tag --sort=-version:refname 2>/dev/null | sed -En 's/^v([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' | head -n 1)
-    VERSION="${VERSION:-1.0.0}"
+VERSION=$(tr -d '[:space:]' < VERSION)
+if ! printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "VERSION must contain a semantic version such as 1.2.3" >&2
+    exit 2
 fi
 BUILD_NUMBER="${CHU_BUILD_NUMBER:-1}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -48,16 +48,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <key>CFBundleName</key><string>$APP_DISPLAY_NAME</string>
 <key>CFBundleDisplayName</key><string>$APP_DISPLAY_NAME</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.0.0</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>$VERSION</string>
+<key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>CFBundleDevelopmentRegion</key><string>en</string>
 <key>CFBundleLocalizations</key><array><string>en</string><string>zh-Hans</string><string>zh-Hant</string></array>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
 iconset="$(mktemp -d)/ChuLaunchpad.iconset"
 mkdir -p "$iconset"
 trap 'rm -rf "$(dirname "$iconset")"' EXIT
