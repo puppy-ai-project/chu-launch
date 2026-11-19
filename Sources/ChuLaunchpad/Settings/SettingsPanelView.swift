@@ -860,6 +860,7 @@ enum SettingsTab {
     var onRecordingStateChanged: ((Bool) -> Void)?
     var onLaunchAtLoginChanged: ((Bool) -> Void)?
     var onDockPinChanged: ((Bool) -> Void)?
+    var onAboutSelected: (() -> Void)?
 
     private var dragStartMouseInParent: NSPoint?
     private var dragStartOrigin: NSPoint?
@@ -1326,6 +1327,7 @@ enum SettingsTab {
         generalPage.isHidden = (tab != .general)
         aboutPage.isHidden = (tab != .about)
         headerTitleLabel.stringValue = (tab == .general) ? "通用" : "关于"
+        if tab == .about { onAboutSelected?() }
     }
 
     // MARK: - 快捷键录制事件处理

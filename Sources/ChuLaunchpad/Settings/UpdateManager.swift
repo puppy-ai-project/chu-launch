@@ -282,6 +282,7 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
     private var downloadTask: URLSessionDownloadTask?
     private var downloadDelegate: UpdateDownloadSessionDelegate?
     private var downloadGeneration = 0
+    private var lastCheckStartedAt: Date?
 
     static var updatesDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -289,13 +290,27 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
     }
 
     func checkForUpdates() {
+        beginCheck(force: true)
+    }
+
+    /// Shares a short cooldown across launch, foreground, About-page, and timer checks.
+    /// This prevents rapid launcher toggles from generating a burst of release requests.
+    func checkForUpdatesIfNeeded() {
+        beginCheck(force: false)
+    }
+
+    private func beginCheck(force: Bool) {
         switch state {
-        case .checking, .downloading, .installing:
+        case .checking, .downloading, .downloaded, .installing:
             return
         default:
             break
         }
+        if !force, let lastCheckStartedAt, Date().timeIntervalSince(lastCheckStartedAt) < 60 {
+            return
+        }
 
+        lastCheckStartedAt = Date()
         state = .checking
         Task {
             do {

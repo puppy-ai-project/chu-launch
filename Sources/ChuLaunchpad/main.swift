@@ -1339,6 +1339,7 @@ private enum AppSortOrder: Int {
     }
 
     private var wallpaperTimer: Timer?
+    private var updateCheckTimer: Timer?
     #if DEBUG
     private var backgroundDebugPanel: BackgroundDebugPanel?
     private var debugRefreshTask: Task<Void, Never>?
@@ -1351,6 +1352,7 @@ private enum AppSortOrder: Int {
     private let hotKeyManager = GlobalHotKeyManager()
     private let updateManager = AppUpdateManager()
     private let moreButton = NSButton()
+    private let updateNoticeButton = NSButton()
     private let pagedContainer = PagedContainerView(frame: .zero)
     private let pageIndicator = PageIndicator()
     private let iconCache = NSCache<NSString, NSImage>()
@@ -1442,6 +1444,19 @@ private enum AppSortOrder: Int {
         moreButton.layer?.backgroundColor = NSColor(white: 0.15, alpha: 0.45).cgColor
         moreButton.layer?.cornerRadius = 16
         backgroundView.addSubview(moreButton)
+        updateNoticeButton.title = "发现新版本"
+        updateNoticeButton.font = .systemFont(ofSize: 12, weight: .semibold)
+        updateNoticeButton.contentTintColor = .white
+        updateNoticeButton.isBordered = false
+        updateNoticeButton.wantsLayer = true
+        updateNoticeButton.layer?.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.94).cgColor
+        updateNoticeButton.layer?.cornerRadius = 14
+        updateNoticeButton.target = self
+        updateNoticeButton.action = #selector(openUpdateNotice)
+        updateNoticeButton.toolTip = "发现新版本，点击查看并更新"
+        updateNoticeButton.setAccessibilityLabel("发现新版本，打开关于与更新")
+        updateNoticeButton.isHidden = true
+        backgroundView.addSubview(updateNoticeButton)
 
         // 多页全屏平移容器
         pagedContainer.onPageChanged = { [weak self] page in
@@ -1503,6 +1518,12 @@ private enum AppSortOrder: Int {
         }
         updateManager.onStateChanged = { [weak self] state in
             self?.settingsPanel?.applyUpdateState(state)
+            self?.updateMoreButton()
+        }
+        updateManager.checkForUpdatesIfNeeded()
+        updateCheckTimer?.invalidate()
+        updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updateManager.checkForUpdatesIfNeeded() }
         }
         let savedHotKey = HotKeyStore.load()
         let hotKeyStatus = hotKeyManager.register(savedHotKey)
@@ -1574,7 +1595,15 @@ private enum AppSortOrder: Int {
     }
 
     private func updateMoreButton() {
-        moreButton.isHidden = openFolder != nil || !searchCapsule.stringValue.isEmpty
+        let controlsHidden = openFolder != nil || !searchCapsule.stringValue.isEmpty
+        moreButton.isHidden = controlsHidden
+        let hasAvailableUpdate: Bool
+        if case .available = updateManager.state {
+            hasAvailableUpdate = true
+        } else {
+            hasAvailableUpdate = false
+        }
+        updateNoticeButton.isHidden = controlsHidden || !hasAvailableUpdate
     }
 
     private func updateSortMenu() {
@@ -1648,7 +1677,15 @@ private enum AppSortOrder: Int {
     }
 
     @objc private func openSettings() {
-        openSettingsPanel(initialTab: .general)
+        if case .available = updateManager.state {
+            openSettingsPanel(initialTab: .about)
+        } else {
+            openSettingsPanel(initialTab: .general)
+        }
+    }
+
+    @objc private func openUpdateNotice() {
+        openSettingsPanel(initialTab: .about)
     }
 
     private func openSettingsPanel(initialTab: SettingsTab) {
@@ -1664,6 +1701,7 @@ private enum AppSortOrder: Int {
         let panelHeight: CGFloat = 470
         let panel = SettingsPanelView(frame: NSRect(x: floor(bounds.midX - 340), y: floor(bounds.midY - panelHeight / 2), width: 680, height: panelHeight))
         panel.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+        panel.onAboutSelected = { [weak self] in self?.updateManager.checkForUpdatesIfNeeded() }
         panel.selectTab(initialTab)
         panel.setHotKeyStatus(hotKeyManager.lastStatus)
         panel.setLaunchAtLogin(enabled: LaunchAtLoginManager.isEnabled())
@@ -1859,7 +1897,7 @@ private enum AppSortOrder: Int {
                 var isControl = false
                 while let view = target {
                     if let item = view as? AppItemView { self.pointerItem = item; isControl = true; break }
-                    if view is SearchCapsuleView || view is PageIndicator || view === self.moreButton { isControl = true; break }
+                    if view is SearchCapsuleView || view is PageIndicator || view === self.moreButton || view === self.updateNoticeButton { isControl = true; break }
                     target = view.superview
                 }
                 self.pointerIsBlank = !isControl
@@ -2033,7 +2071,12 @@ private enum AppSortOrder: Int {
     }
 
     private func show() {
-        if window.isVisible { transition(visible: true); return }
+        if window.isVisible {
+            if !launcherTargetVisible { updateManager.checkForUpdatesIfNeeded() }
+            transition(visible: true)
+            return
+        }
+        updateManager.checkForUpdatesIfNeeded()
         showRequestGeneration += 1
         let request = showRequestGeneration
         launcherTargetVisible = true
@@ -2072,6 +2115,7 @@ private enum AppSortOrder: Int {
         let searchY = screenHeight - 68 - searchHeight
         searchCapsule.frame = NSRect(x: searchX, y: searchY, width: searchWidth, height: searchHeight)
         moreButton.frame = NSRect(x: searchX + searchWidth + 10, y: searchY, width: 32, height: 32)
+        updateNoticeButton.frame = NSRect(x: moreButton.frame.maxX + 8, y: searchY + 2, width: 96, height: 28)
         updateMoreButton()
 
         // 2. 底部分页指示器：居中，高度 20，位于 Dock 上方约 125pt
