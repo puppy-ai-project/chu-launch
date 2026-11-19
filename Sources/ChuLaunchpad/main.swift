@@ -1314,7 +1314,7 @@ private enum AppSortOrder: Int {
 
     private func checkInstalledVersion() {
         let agent = Bundle.main.bundleURL
-        guard ["Chu Launchpad.app", "ChuLaunchAgent.app"].contains(agent.lastPathComponent), agent.deletingLastPathComponent().lastPathComponent == "Helpers" else { return }
+        guard ["\(DockPin.appDisplayName).app", "ChuLaunchAgent.app"].contains(agent.lastPathComponent), agent.deletingLastPathComponent().lastPathComponent == "Helpers" else { return }
         let outer = agent.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         func installedVersion(_ bundle: URL, identifier: String) -> String? {
             guard let data = try? Data(contentsOf: bundle.appendingPathComponent("Contents/Info.plist")),
@@ -1325,9 +1325,9 @@ private enum AppSortOrder: Int {
             else { return nil }
             return plist["CFBundleShortVersionString"] as? String
         }
-        guard let version = installedVersion(outer, identifier: "com.withqq.chu-launchpad"),
+        guard let version = installedVersion(outer, identifier: DockPin.bundleID),
               version != runningVersion,
-              installedVersion(agent, identifier: "com.withqq.chu-launchpad.agent") == version
+              installedVersion(agent, identifier: DockPin.agentBundleID) == version
         else { observedReplacement = nil; return }
         // Allow Finder to finish copying the bundle before reopening it.
         if observedReplacement == version {
@@ -1398,7 +1398,7 @@ private enum AppSortOrder: Int {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(toggleFromDock(_:)),
-            name: Notification.Name("com.withqq.chu-launchpad.toggle"), object: nil, suspensionBehavior: .deliverImmediately)
+            name: Notification.Name(DockPin.toggleNotification), object: nil, suspensionBehavior: .deliverImmediately)
         NSApp.applicationIconImage = ChuAppIcon.image()
         setupMenu()
 
@@ -1866,7 +1866,7 @@ private enum AppSortOrder: Int {
         MenuSymbols.apply("slider.horizontal.3", to: debug)
         #endif
         appMenu.addItem(.separator())
-        let quit = appMenu.addItem(withTitle: "退出 Chu Launchpad", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = appMenu.addItem(withTitle: "退出 \(DockPin.appDisplayName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         MenuSymbols.apply("power", to: quit)
         NSApp.mainMenu = menu
     }

@@ -1,15 +1,26 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-APP="${1:-build/Chu Launchpad.app}"
+if [ "${CHU_RELEASE:-0}" = 1 ]; then
+    APP_NAME="Chu Launchpad.app"
+    APP_DISPLAY_NAME="Chu Launchpad"
+    APP_BUNDLE_ID="com.withqq.chu-launchpad"
+    AGENT_BUNDLE_ID="com.withqq.chu-launchpad.agent"
+    BUILD_FLAGS="release"
+else
+    APP_NAME="Chu Launchpad dev.app"
+    APP_DISPLAY_NAME="Chu Launchpad dev"
+    APP_BUNDLE_ID="com.withqq.chu-launchpad.dev"
+    AGENT_BUNDLE_ID="com.withqq.chu-launchpad.agent.dev"
+    BUILD_FLAGS="development"
+fi
+APP="${1:-build/$APP_NAME}"
 VERSION="${CHU_VERSION:-1.0.0}"
 BUILD_NUMBER="${CHU_BUILD_NUMBER:-1}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-if [ "${CHU_DEBUG:-0}" = 1 ]; then
-    set -- -D DEBUG
-else
-    set --
-fi
+set --
+if [ "$BUILD_FLAGS" = development ]; then set -- "$@" -D CHU_DEVELOPMENT; fi
+if [ "${CHU_DEBUG:-0}" = 1 ]; then set -- "$@" -D DEBUG; fi
 if [ -n "${CHU_ARCH:-}" ]; then
     case "$CHU_ARCH" in
         arm64|x86_64) ;;
@@ -17,21 +28,21 @@ if [ -n "${CHU_ARCH:-}" ]; then
     esac
     set -- "$@" -target "$CHU_ARCH-apple-macosx14.0"
 fi
-AGENT="$APP/Contents/Helpers/Chu Launchpad.app"
+AGENT="$APP/Contents/Helpers/$APP_NAME"
 # Remove the obsolete generated helper so packaged builds contain only the current bundle.
 rm -rf "$APP/Contents/Helpers/ChuLaunchAgent.app"
 mkdir -p "$AGENT/Contents/MacOS" "$AGENT/Contents/Resources"
 swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O Sources/ChuLaunchpad/Core/*.swift Sources/ChuLaunchpad/Settings/*.swift scripts/entry/DockPin.swift Sources/ChuLaunchpad/main.swift -o "$AGENT/Contents/MacOS/Chu Launchpad"
 swiftc "$@" -module-cache-path /tmp/swift-module-cache -swift-version 6 -O scripts/entry/DockPin.swift scripts/entry/main.swift -o "$APP/Contents/MacOS/ChuLaunchpad"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>LSUIElement</key><true/>
 <key>CFBundleExecutable</key><string>ChuLaunchpad</string>
-<key>CFBundleIdentifier</key><string>com.withqq.chu-launchpad</string>
-<key>CFBundleName</key><string>Chu Launchpad</string>
-<key>CFBundleDisplayName</key><string>Chu Launchpad</string>
+<key>CFBundleIdentifier</key><string>$APP_BUNDLE_ID</string>
+<key>CFBundleName</key><string>$APP_DISPLAY_NAME</string>
+<key>CFBundleDisplayName</key><string>$APP_DISPLAY_NAME</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>1.0.0</string>
 <key>CFBundleVersion</key><string>1</string>
@@ -74,8 +85,10 @@ rm "$iconset/source.png"
 iconutil -c icns "$iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 /usr/libexec/PlistBuddy -c 'Add :CFBundleIconFile string AppIcon' "$APP/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile AppIcon' "$APP/Contents/Info.plist"
 cp "$APP/Contents/Info.plist" "$AGENT/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.withqq.chu-launchpad.agent" "$AGENT/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $AGENT_BUNDLE_ID" "$AGENT/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable Chu Launchpad" "$AGENT/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_DISPLAY_NAME" "$AGENT/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_DISPLAY_NAME" "$AGENT/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :LSUIElement true' "$AGENT/Contents/Info.plist"
 cp "$APP/Contents/Resources/AppIcon.icns" "$AGENT/Contents/Resources/"
 printf 'Built %s\n' "$APP"

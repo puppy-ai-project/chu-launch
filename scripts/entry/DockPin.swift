@@ -2,7 +2,17 @@ import Foundation
 import Darwin
 
 enum DockPin {
+#if CHU_DEVELOPMENT
+    static let bundleID = "com.withqq.chu-launchpad.dev"
+    static let agentBundleID = "com.withqq.chu-launchpad.agent.dev"
+    static let appDisplayName = "Chu Launchpad dev"
+    static let toggleNotification = "com.withqq.chu-launchpad.toggle.dev"
+#else
     static let bundleID = "com.withqq.chu-launchpad"
+    static let agentBundleID = "com.withqq.chu-launchpad.agent"
+    static let appDisplayName = "Chu Launchpad"
+    static let toggleNotification = "com.withqq.chu-launchpad.toggle"
+#endif
     static let marker = "dockPinAttemptedV1"
 
     static func isInstalled(_ app: URL, home: URL) -> Bool {
@@ -30,7 +40,7 @@ enum DockPin {
     static func tile(for url: URL, bundleID: String) -> [String: Any] {
         ["tile-type": "file-tile", "tile-data": [
             "bundle-identifier": bundleID,
-            "file-label": "Chu Launchpad",
+            "file-label": appDisplayName,
             "file-type": 41,
             "file-data": ["_CFURLString": url.absoluteURL.absoluteString, "_CFURLStringType": 15]
         ]]

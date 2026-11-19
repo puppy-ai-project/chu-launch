@@ -20,7 +20,7 @@ STAGING_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGING_DIR"' EXIT HUP INT TERM
 
 mkdir -p "$OUTPUT_DIR"
-CHU_VERSION="$VERSION" CHU_BUILD_NUMBER="${CHU_BUILD_NUMBER:-1}" CHU_ARCH="$ARCH" sh scripts/build.sh "$APP_PATH"
+CHU_RELEASE=1 CHU_VERSION="$VERSION" CHU_BUILD_NUMBER="${CHU_BUILD_NUMBER:-1}" CHU_ARCH="$ARCH" sh scripts/build.sh "$APP_PATH"
 
 ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$OUTPUT_DIR/Chu-Launchpad-$VERSION-mac-$ARCH_SUFFIX.zip"
 cp -R "$APP_PATH" "$STAGING_DIR/$APP_NAME"

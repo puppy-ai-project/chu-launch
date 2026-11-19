@@ -414,7 +414,7 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
         state = .installing(version: version, fileURL: zipURL)
 
         let agentURL = Bundle.main.bundleURL
-        let targetAppURL = ["Chu Launchpad.app", "ChuLaunchAgent.app"].contains(agentURL.lastPathComponent) && agentURL.deletingLastPathComponent().lastPathComponent == "Helpers"
+        let targetAppURL = ["\(DockPin.appDisplayName).app", "ChuLaunchAgent.app"].contains(agentURL.lastPathComponent) && agentURL.deletingLastPathComponent().lastPathComponent == "Helpers"
             ? agentURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             : agentURL
         let extractDir = FileManager.default.temporaryDirectory

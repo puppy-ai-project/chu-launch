@@ -973,7 +973,7 @@ enum SettingsTab {
         sidebarView.addSubview(generalTabButton)
         sidebarView.addSubview(aboutTabButton)
 
-        makeLabel("Chu Launchpad", x: 22, y: bounds.height - 34, size: 11, weight: .medium, color: .tertiaryLabelColor, in: sidebarView)
+        makeLabel(DockPin.appDisplayName, x: 22, y: bounds.height - 34, size: 11, weight: .medium, color: .tertiaryLabelColor, in: sidebarView)
 
         // 右侧内容区 (488pt)
         let contentArea = FlippedView(frame: NSRect(x: sidebarWidth, y: 0, width: bounds.width - sidebarWidth, height: bounds.height))
@@ -1168,7 +1168,7 @@ enum SettingsTab {
         productCard.addSubview(iconShadowHolder)
         NSApp.applicationIconImage = ChuAppIcon.image(size: 512)
 
-        let titleField = makeLabel("Chu Launchpad", x: 90, y: 20, size: 18, weight: .bold, color: .labelColor, in: productCard)
+        let titleField = makeLabel(DockPin.appDisplayName, x: 90, y: 20, size: 18, weight: .bold, color: .labelColor, in: productCard)
 
         // 版本号胶囊徽章（与主标题垂直中心对齐）
         versionBadgeLabel.stringValue = "v\(version)"
