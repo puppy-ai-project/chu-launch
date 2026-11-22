@@ -82,6 +82,65 @@ enum AnimationHelper {
     }
 }
 
+@MainActor enum GooeyRenderer {
+    static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+
+    static func render(
+        trailRect: CGRect,
+        leadRect: CGRect,
+        cornerRadius: CGFloat,
+        blurRadius: CGFloat,
+        scale: CGFloat,
+        isFlipped: Bool
+    ) -> (frame: CGRect, image: CGImage)? {
+        let pad = ceil(blurRadius * 2.5)
+        let union = trailRect.union(leadRect).insetBy(dx: -pad, dy: -pad)
+        guard union.width > 0, union.height > 0 else { return nil }
+
+        func toCI(_ rect: CGRect) -> CGRect {
+            let x = (rect.minX - union.minX) * scale
+            let y = isFlipped ? (union.maxY - rect.maxY) * scale : (rect.minY - union.minY) * scale
+            return CGRect(x: x, y: y, width: rect.width * scale, height: rect.height * scale)
+        }
+
+        let pxExtent = CGRect(x: 0, y: 0, width: ceil(union.width * scale), height: ceil(union.height * scale))
+        guard let r1 = CIFilter(name: "CIRoundedRectangleGenerator"),
+              let r2 = CIFilter(name: "CIRoundedRectangleGenerator"),
+              let blur = CIFilter(name: "CIGaussianBlur"),
+              let matrix = CIFilter(name: "CIColorMatrix") else { return nil }
+
+        r1.setValue(CIVector(cgRect: toCI(trailRect)), forKey: "inputExtent")
+        r1.setValue(cornerRadius * scale, forKey: "inputRadius")
+        r1.setValue(CIColor.white, forKey: "inputColor")
+
+        r2.setValue(CIVector(cgRect: toCI(leadRect)), forKey: "inputExtent")
+        r2.setValue(cornerRadius * scale, forKey: "inputRadius")
+        r2.setValue(CIColor.white, forKey: "inputColor")
+
+        guard let img1 = r1.outputImage, let img2 = r2.outputImage else { return nil }
+        let combined = img1.composited(over: img2)
+
+        blur.setValue(combined, forKey: kCIInputImageKey)
+        blur.setValue(blurRadius * scale, forKey: kCIInputRadiusKey)
+        guard let blurred = blur.outputImage else { return nil }
+
+        matrix.setValue(blurred, forKey: kCIInputImageKey)
+        matrix.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputRVector")
+        matrix.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputGVector")
+        matrix.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBVector")
+        matrix.setValue(CIVector(x: 0, y: 0, z: 0, w: 28), forKey: "inputAVector")
+        matrix.setValue(CIVector(x: 1, y: 1, z: 1, w: -13), forKey: "inputBiasVector")
+
+        guard let outputCI = matrix.outputImage,
+              let cgImage = ciContext.createCGImage(outputCI, from: pxExtent) else { return nil }
+        return (union, cgImage)
+    }
+}
+
+@MainActor final class FlippedContainerView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 // Model values are set before animations are installed; presentation values make
 // a reversal continue from the frame currently on screen.
 @MainActor enum LauncherTransition {
@@ -660,11 +719,21 @@ enum AnimationHelper {
         return icon
     }()
     private var itemViews: [AppItemView] = []
-    private let hoverHighlightView = NSView()
+    private let hoverHighlightView = FlippedContainerView()
+    private let hoverImageLayer = CALayer()
     private var hoverTrackingArea: NSTrackingArea?
     private weak var hoveredItem: AppItemView?
     private var lastHoverPoint: NSPoint?
-    private var hoverGeneration = 0
+    private var hoverDisplayLink: CADisplayLink?
+    private var lastDisplayTimestamp: CFTimeInterval = 0
+    private var hoverLeadCenter: CGPoint = .zero
+    private var hoverTrailCenter: CGPoint = .zero
+    private var hoverTargetCenter: CGPoint = .zero
+    private var hoverSize: CGSize = .zero
+    private var hoverTargetSize: CGSize = .zero
+    private var hoverCurrentOpacity: Float = 0
+    private var hoverTargetOpacity: Float = 0
+    private let hoverMaxOpacity: Float = 0.16
     var columns = 7
     var rows = 5
     var onBlankAreaClicked: (() -> Void)?
@@ -686,12 +755,21 @@ enum AnimationHelper {
     private func setupView() {
         wantsLayer = true
         hoverHighlightView.wantsLayer = true
-        hoverHighlightView.layer?.cornerRadius = 20
-        hoverHighlightView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
-        hoverHighlightView.layer?.borderWidth = 1
-        hoverHighlightView.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
-        hoverHighlightView.alphaValue = 0
+        hoverHighlightView.frame = bounds
+        hoverHighlightView.autoresizingMask = [.width, .height]
+        hoverHighlightView.layer?.masksToBounds = false
+        hoverHighlightView.layer?.opacity = 0
+
+        hoverImageLayer.contentsGravity = .resize
+        hoverHighlightView.layer?.addSublayer(hoverImageLayer)
         addSubview(hoverHighlightView)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            stopHoverDisplayLink()
+        }
     }
 
     override func updateTrackingAreas() {
@@ -714,7 +792,14 @@ enum AnimationHelper {
         itemViews.removeAll()
         hoveredItem = nil
         lastHoverPoint = nil
-        hoverHighlightView.alphaValue = 0
+        stopHoverDisplayLink()
+        hoverCurrentOpacity = 0
+        hoverTargetOpacity = 0
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        hoverImageLayer.contents = nil
+        hoverHighlightView.layer?.opacity = 0
+        CATransaction.commit()
         if hoverHighlightView.superview !== self {
             addSubview(hoverHighlightView)
         }
@@ -800,8 +885,14 @@ enum AnimationHelper {
             let y = startY + CGFloat(row) * cellHeight
             itemView.frame = NSRect(x: x, y: y, width: cellWidth, height: cellHeight)
         }
-        if let hoveredItem {
-            hoverHighlightView.frame = targetHighlightFrame(for: hoveredItem)
+        if let hoveredItem, hoverDisplayLink == nil {
+            let targetFrame = targetHighlightFrame(for: hoveredItem)
+            hoverTargetCenter = CGPoint(x: targetFrame.midX, y: targetFrame.midY)
+            hoverLeadCenter = hoverTargetCenter
+            hoverTrailCenter = hoverTargetCenter
+            hoverSize = targetFrame.size
+            hoverTargetSize = targetFrame.size
+            updateHoverLayers()
         }
     }
 
@@ -824,27 +915,36 @@ enum AnimationHelper {
     func clearHover(animated: Bool = false, exitPoint: NSPoint? = nil) {
         guard let oldItem = hoveredItem else {
             if !animated {
-                hoverGeneration += 1
-                hoverHighlightView.alphaValue = 0
+                stopHoverDisplayLink()
+                hoverCurrentOpacity = 0
+                hoverTargetOpacity = 0
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                hoverImageLayer.contents = nil
+                hoverHighlightView.layer?.opacity = 0
+                CATransaction.commit()
             }
             return
         }
         hoveredItem = nil
-        hoverGeneration += 1
         let baseFrame = targetHighlightFrame(for: oldItem)
         guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-            hoverHighlightView.alphaValue = 0
+            stopHoverDisplayLink()
+            hoverCurrentOpacity = 0
+            hoverTargetOpacity = 0
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            hoverImageLayer.contents = nil
+            hoverHighlightView.layer?.opacity = 0
+            CATransaction.commit()
             return
         }
         let targetPoint = exitPoint ?? lastHoverPoint ?? NSPoint(x: oldItem.frame.midX, y: oldItem.frame.midY)
-        let offset = directionalOffset(from: NSPoint(x: oldItem.frame.midX, y: oldItem.frame.midY), to: targetPoint, magnitude: 22)
-        let exitFrame = baseFrame.offsetBy(dx: offset.x, dy: offset.y)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            hoverHighlightView.animator().frame = exitFrame
-            hoverHighlightView.animator().alphaValue = 0
-        }
+        let offset = directionalOffset(from: NSPoint(x: oldItem.frame.midX, y: oldItem.frame.midY), to: targetPoint, magnitude: 42)
+        hoverTargetCenter = CGPoint(x: baseFrame.midX + offset.x, y: baseFrame.midY + offset.y)
+        hoverTargetSize = baseFrame.size
+        hoverTargetOpacity = 0
+        startHoverDisplayLink()
     }
 
     private func updateHover(at point: NSPoint, windowPoint: NSPoint) {
@@ -868,46 +968,160 @@ enum AnimationHelper {
         }
 
         let targetFrame = targetHighlightFrame(for: targetItem)
+        let targetCenter = CGPoint(x: targetFrame.midX, y: targetFrame.midY)
         let previousItem = hoveredItem
         hoveredItem = targetItem
-        hoverGeneration += 1
 
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            hoverHighlightView.frame = targetFrame
-            hoverHighlightView.alphaValue = 1
+            stopHoverDisplayLink()
+            hoverLeadCenter = targetCenter
+            hoverTrailCenter = targetCenter
+            hoverTargetCenter = targetCenter
+            hoverSize = targetFrame.size
+            hoverTargetSize = targetFrame.size
+            hoverCurrentOpacity = hoverMaxOpacity
+            hoverTargetOpacity = hoverMaxOpacity
+            updateHoverLayers()
             lastHoverPoint = point
             return
         }
 
-        if previousItem != nil || hoverHighlightView.alphaValue > 0.05 {
-            // 从已有高亮状态按鼠标移动方向平滑滑向新应用
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.22
-                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
-                hoverHighlightView.animator().frame = targetFrame
-                hoverHighlightView.animator().alphaValue = 1.0
-            }
-        } else {
-            // 首次进入时从鼠标进入方向滑入
+        hoverTargetCenter = targetCenter
+        hoverTargetSize = targetFrame.size
+        hoverTargetOpacity = hoverMaxOpacity
+
+        if previousItem == nil && hoverCurrentOpacity <= 0.01 {
+            // 首次进入：尾部从鼠标进入方向伸展粘附过来
             let center = NSPoint(x: targetItem.frame.midX, y: targetItem.frame.midY)
             let fromPoint = lastHoverPoint ?? point
             let offset: NSPoint
             if lastHoverPoint != nil, hypot(point.x - fromPoint.x, point.y - fromPoint.y) > 1 {
-                let dir = directionalOffset(from: point, to: fromPoint, magnitude: 18)
-                offset = dir
+                offset = directionalOffset(from: point, to: fromPoint, magnitude: 30)
             } else {
-                offset = directionalOffset(from: center, to: point, magnitude: 18)
+                offset = directionalOffset(from: center, to: point, magnitude: 30)
             }
-            hoverHighlightView.frame = targetFrame.offsetBy(dx: offset.x, dy: offset.y)
-            hoverHighlightView.alphaValue = 0
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.20
-                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
-                hoverHighlightView.animator().frame = targetFrame
-                hoverHighlightView.animator().alphaValue = 1.0
-            }
+            hoverLeadCenter = targetCenter
+            hoverTrailCenter = CGPoint(x: targetCenter.x + offset.x, y: targetCenter.y + offset.y)
+            hoverSize = targetFrame.size
+            hoverCurrentOpacity = 0.01
+            updateHoverLayers()
         }
+        startHoverDisplayLink()
         lastHoverPoint = point
+    }
+
+    private func startHoverDisplayLink() {
+        if hoverDisplayLink == nil {
+            lastDisplayTimestamp = 0
+            let link = displayLink(target: self, selector: #selector(stepHoverAnimation(_:)))
+            link.add(to: .main, forMode: .common)
+            hoverDisplayLink = link
+        }
+    }
+
+    private func stopHoverDisplayLink() {
+        hoverDisplayLink?.invalidate()
+        hoverDisplayLink = nil
+        lastDisplayTimestamp = 0
+    }
+
+    @objc private func stepHoverAnimation(_ link: CADisplayLink) {
+        let now = link.timestamp
+        let dt: CGFloat = lastDisplayTimestamp == 0 ? (1.0 / 60.0) : CGFloat(min(0.05, max(0.001, now - lastDisplayTimestamp)))
+        lastDisplayTimestamp = now
+
+        let leadAlpha = 1 - exp(-22.0 * dt)
+        hoverLeadCenter.x += (hoverTargetCenter.x - hoverLeadCenter.x) * leadAlpha
+        hoverLeadCenter.y += (hoverTargetCenter.y - hoverLeadCenter.y) * leadAlpha
+
+        // 粘滞跟随 + 最大拉丝距离限制，确保毒液颈部不断裂
+        let trailAlpha = 1 - exp(-10.5 * dt)
+        hoverTrailCenter.x += (hoverTargetCenter.x - hoverTrailCenter.x) * trailAlpha
+        hoverTrailCenter.y += (hoverTargetCenter.y - hoverTrailCenter.y) * trailAlpha
+
+        let maxSep = min(hoverSize.width, hoverSize.height) * 1.05
+        let dx = hoverTrailCenter.x - hoverLeadCenter.x
+        let dy = hoverTrailCenter.y - hoverLeadCenter.y
+        let sep = hypot(dx, dy)
+        if sep > maxSep && maxSep > 1 {
+            hoverTrailCenter.x = hoverLeadCenter.x + dx / sep * maxSep
+            hoverTrailCenter.y = hoverLeadCenter.y + dy / sep * maxSep
+        }
+
+        let sizeAlpha = 1 - exp(-18.0 * dt)
+        hoverSize.width += (hoverTargetSize.width - hoverSize.width) * sizeAlpha
+        hoverSize.height += (hoverTargetSize.height - hoverSize.height) * sizeAlpha
+
+        let opacityAlpha = 1 - exp(-16.0 * dt)
+        hoverCurrentOpacity += (hoverTargetOpacity - hoverCurrentOpacity) * Float(opacityAlpha)
+
+        let leadDone = hypot(hoverTargetCenter.x - hoverLeadCenter.x, hoverTargetCenter.y - hoverLeadCenter.y) < 0.4
+        let trailDone = hypot(hoverTargetCenter.x - hoverTrailCenter.x, hoverTargetCenter.y - hoverTrailCenter.y) < 0.4
+        let opacityDone = abs(hoverTargetOpacity - hoverCurrentOpacity) < 0.004
+
+        if leadDone && trailDone && opacityDone {
+            hoverLeadCenter = hoverTargetCenter
+            hoverTrailCenter = hoverTargetCenter
+            hoverSize = hoverTargetSize
+            hoverCurrentOpacity = hoverTargetOpacity
+            updateHoverLayers()
+            stopHoverDisplayLink()
+            return
+        }
+
+        updateHoverLayers()
+    }
+
+    private func updateHoverLayers() {
+        let dist = hypot(hoverLeadCenter.x - hoverTrailCenter.x, hoverLeadCenter.y - hoverTrailCenter.y)
+        let isGooey = dist >= 0.8
+        let s = min(1.0, dist / max(1, min(hoverSize.width, hoverSize.height)))
+        let trailScale: CGFloat = isGooey ? (1.0 - 0.16 * s) : 1.0
+        let leadScale: CGFloat = isGooey ? (1.0 - 0.04 * s) : 1.0
+
+        let trailRect = CGRect(
+            x: hoverTrailCenter.x - (hoverSize.width * trailScale) / 2,
+            y: hoverTrailCenter.y - (hoverSize.height * trailScale) / 2,
+            width: hoverSize.width * trailScale,
+            height: hoverSize.height * trailScale
+        )
+        let leadRect = CGRect(
+            x: hoverLeadCenter.x - (hoverSize.width * leadScale) / 2,
+            y: hoverLeadCenter.y - (hoverSize.height * leadScale) / 2,
+            width: hoverSize.width * leadScale,
+            height: hoverSize.height * leadScale
+        )
+
+        let scale = window?.backingScaleFactor ?? 2.0
+        let blurT = min(1.0, dist / 42.0)
+        let effectiveBlur = max(0.5, 14.0 * blurT * blurT * (3.0 - 2.0 * blurT))
+        if isGooey, let rendered = GooeyRenderer.render(
+            trailRect: trailRect,
+            leadRect: leadRect,
+            cornerRadius: 20,
+            blurRadius: effectiveBlur,
+            scale: scale,
+            isFlipped: true
+        ) {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            hoverHighlightView.layer?.opacity = hoverCurrentOpacity
+            hoverImageLayer.backgroundColor = nil
+            hoverImageLayer.cornerRadius = 0
+            hoverImageLayer.frame = rendered.frame
+            hoverImageLayer.contents = rendered.image
+            hoverImageLayer.contentsScale = scale
+            CATransaction.commit()
+        } else {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            hoverHighlightView.layer?.opacity = hoverCurrentOpacity
+            hoverImageLayer.contents = nil
+            hoverImageLayer.backgroundColor = NSColor.white.cgColor
+            hoverImageLayer.cornerRadius = 20
+            hoverImageLayer.frame = leadRect
+            CATransaction.commit()
+        }
     }
 
     private func targetHighlightFrame(for itemView: AppItemView) -> NSRect {
@@ -1275,10 +1489,15 @@ enum AnimationHelper {
     private let inactiveDiameter: CGFloat = 6
     private let activeWidth: CGFloat = 14
     private let activeHeight: CGFloat = 8
-    private let baseSpacing: CGFloat = 18
 
     private var dotLayers: [CALayer] = []
     private let activeLayer = CALayer()
+    private var displayLink: CADisplayLink?
+    private var lastTimestamp: CFTimeInterval = 0
+    private var leadX: CGFloat = 0
+    private var trailX: CGFloat = 0
+    private var targetX: CGFloat = 0
+    private var hasPositioned = false
     private var isDraggingProgress = false
 
     var current = 0 {
@@ -1316,10 +1535,15 @@ enum AnimationHelper {
 
     private func setupView() {
         wantsLayer = true
-        activeLayer.backgroundColor = NSColor.white.cgColor
-        activeLayer.cornerRadius = activeHeight / 2
-        activeLayer.bounds = CGRect(x: 0, y: 0, width: activeWidth, height: activeHeight)
+        activeLayer.contentsGravity = .resize
         layer?.addSublayer(activeLayer)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            stopDisplayLink()
+        }
     }
 
     private static func effectiveSpacing(count: Int, width: CGFloat) -> CGFloat {
@@ -1338,7 +1562,8 @@ enum AnimationHelper {
     private func rebuildDots() {
         for dot in dotLayers { dot.removeFromSuperlayer() }
         dotLayers.removeAll()
-        activeLayer.removeAnimation(forKey: "stickyMove")
+        stopDisplayLink()
+        hasPositioned = false
         isDraggingProgress = false
 
         guard count > 1, let rootLayer = layer else {
@@ -1373,109 +1598,145 @@ enum AnimationHelper {
     override func layout() {
         super.layout()
         layoutDots()
-        if activeLayer.animation(forKey: "stickyMove") == nil && !isDraggingProgress {
+        if displayLink == nil && !isDraggingProgress {
             updateActiveDot(animated: false)
         }
     }
 
     func setProgress(_ progress: CGFloat) {
         guard count > 1, bounds.width > 0 else { return }
+        stopDisplayLink()
         isDraggingProgress = true
-        activeLayer.removeAnimation(forKey: "stickyMove")
         let clamped = max(0, min(CGFloat(count - 1), progress))
         let cx = dotCenterX(for: clamped)
         let frac = clamped - floor(clamped)
         let spacing = Self.effectiveSpacing(count: count, width: bounds.width)
-        let stretch = sin(frac * .pi) * (spacing * 0.55)
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        activeLayer.position = CGPoint(x: cx, y: bounds.midY)
-        activeLayer.bounds = CGRect(x: 0, y: 0, width: activeWidth + stretch, height: activeHeight)
-        CATransaction.commit()
+        let pull = sin(frac * .pi) * (spacing * 0.45)
+        let dir: CGFloat = (cx >= leadX) ? 1 : -1
+        leadX = cx + dir * pull * 0.35
+        trailX = cx - dir * pull * 0.65
+        targetX = cx
+        hasPositioned = true
+        updateActiveShapePath()
     }
 
     private func updateActiveDot(animated: Bool) {
         guard count > 1, bounds.width > 0 else { return }
         let targetIndex = max(0, min(count - 1, current))
         let toX = dotCenterX(for: CGFloat(targetIndex))
-        let centerY = bounds.midY
 
         guard animated,
+              hasPositioned,
               !isHidden,
               let window, window.isVisible,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-            activeLayer.removeAnimation(forKey: "stickyMove")
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            activeLayer.position = CGPoint(x: toX, y: centerY)
-            activeLayer.bounds = CGRect(x: 0, y: 0, width: activeWidth, height: activeHeight)
-            CATransaction.commit()
+            stopDisplayLink()
+            leadX = toX
+            trailX = toX
+            targetX = toX
+            hasPositioned = true
+            updateActiveShapePath()
             return
         }
 
-        let presX = activeLayer.presentation()?.position.x ?? activeLayer.position.x
-        let presW = activeLayer.presentation()?.bounds.width ?? activeLayer.bounds.width
-        if abs(toX - presX) < 0.5 && abs(activeWidth - presW) < 0.5 {
-            activeLayer.removeAnimation(forKey: "stickyMove")
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            activeLayer.position = CGPoint(x: toX, y: centerY)
-            activeLayer.bounds = CGRect(x: 0, y: 0, width: activeWidth, height: activeHeight)
-            CATransaction.commit()
+        targetX = toX
+        if abs(targetX - leadX) < 0.3 && abs(targetX - trailX) < 0.3 {
+            stopDisplayLink()
+            leadX = toX
+            trailX = toX
+            updateActiveShapePath()
             return
         }
+        startDisplayLink()
+    }
 
-        let steps = 24
-        var xValues: [CGFloat] = []
-        var sizeValues: [NSValue] = []
-        xValues.reserveCapacity(steps + 1)
-        sizeValues.reserveCapacity(steps + 1)
+    private func startDisplayLink() {
+        if displayLink == nil {
+            lastTimestamp = 0
+            let link = displayLink(target: self, selector: #selector(stepAnimation(_:)))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        }
+    }
 
-        let fromLeft = presX - presW / 2
-        let fromRight = presX + presW / 2
-        let toLeft = toX - activeWidth / 2
-        let toRight = toX + activeWidth / 2
+    private func stopDisplayLink() {
+        displayLink?.invalidate()
+        displayLink = nil
+        lastTimestamp = 0
+    }
 
-        for i in 0...steps {
-            let u = CGFloat(i) / CGFloat(steps)
-            // 前缘快速伸出、后缘粘滞跟随的弹性拉伸曲线
-            let leadT = 1 - pow(1 - u, 2.8)
-            let trailT = pow(u, 2.2)
+    @objc private func stepAnimation(_ link: CADisplayLink) {
+        let now = link.timestamp
+        let dt: CGFloat = lastTimestamp == 0 ? (1.0 / 60.0) : CGFloat(min(0.05, max(0.001, now - lastTimestamp)))
+        lastTimestamp = now
 
-            let left: CGFloat
-            let right: CGFloat
-            if toX >= presX {
-                right = fromRight + (toRight - fromRight) * leadT
-                left = fromLeft + (toLeft - fromLeft) * trailT
-            } else {
-                left = fromLeft + (toLeft - fromLeft) * leadT
-                right = fromRight + (toRight - fromRight) * trailT
-            }
-            let width = max(activeHeight, right - left)
-            let cx = (left + right) / 2
-            xValues.append(cx)
-            sizeValues.append(NSValue(size: NSSize(width: width, height: activeHeight)))
+        let leadAlpha = 1 - exp(-24.0 * dt)
+        leadX += (targetX - leadX) * leadAlpha
+
+        let trailAlpha = 1 - exp(-11.0 * dt)
+        trailX += (targetX - trailX) * trailAlpha
+
+        let spacing = Self.effectiveSpacing(count: count, width: bounds.width)
+        let maxSep = spacing * 0.95
+        if abs(leadX - trailX) > maxSep {
+            trailX = leadX + (trailX > leadX ? maxSep : -maxSep)
         }
 
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        activeLayer.position = CGPoint(x: toX, y: centerY)
-        activeLayer.bounds = CGRect(x: 0, y: 0, width: activeWidth, height: activeHeight)
-        CATransaction.commit()
+        if abs(targetX - leadX) < 0.25 && abs(targetX - trailX) < 0.25 {
+            leadX = targetX
+            trailX = targetX
+            updateActiveShapePath()
+            stopDisplayLink()
+            return
+        }
+        updateActiveShapePath()
+    }
 
-        let posAnim = CAKeyframeAnimation(keyPath: "position.x")
-        posAnim.values = xValues
-        posAnim.calculationMode = .linear
+    private func updateActiveShapePath() {
+        let centerY = bounds.midY
+        let dist = abs(leadX - trailX)
+        let isGooey = dist >= 0.6
+        let spacing = Self.effectiveSpacing(count: count, width: bounds.width)
+        let s = min(1.0, dist / max(1, spacing))
+        let trailScale: CGFloat = isGooey ? (1.0 - 0.18 * s) : 1.0
+        let leadScale: CGFloat = isGooey ? (1.0 - 0.05 * s) : 1.0
 
-        let sizeAnim = CAKeyframeAnimation(keyPath: "bounds.size")
-        sizeAnim.values = sizeValues
-        sizeAnim.calculationMode = .linear
+        let trailW = activeWidth * trailScale
+        let trailH = activeHeight * trailScale
+        let leadW = activeWidth * leadScale
+        let leadH = activeHeight * leadScale
 
-        let group = CAAnimationGroup()
-        group.animations = [posAnim, sizeAnim]
-        group.duration = 0.35
-        activeLayer.add(group, forKey: "stickyMove")
+        let trailRect = CGRect(x: trailX - trailW / 2, y: centerY - trailH / 2, width: trailW, height: trailH)
+        let leadRect = CGRect(x: leadX - leadW / 2, y: centerY - leadH / 2, width: leadW, height: leadH)
+        let scale = window?.backingScaleFactor ?? 2.0
+        let blurT = min(1.0, dist / max(1, spacing * 0.7))
+        let effectiveBlur = max(0.3, 3.5 * blurT * blurT * (3.0 - 2.0 * blurT))
+
+        if isGooey, let rendered = GooeyRenderer.render(
+            trailRect: trailRect,
+            leadRect: leadRect,
+            cornerRadius: activeHeight / 2,
+            blurRadius: effectiveBlur,
+            scale: scale,
+            isFlipped: false
+        ) {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            activeLayer.backgroundColor = nil
+            activeLayer.cornerRadius = 0
+            activeLayer.frame = rendered.frame
+            activeLayer.contents = rendered.image
+            activeLayer.contentsScale = scale
+            CATransaction.commit()
+        } else {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            activeLayer.contents = nil
+            activeLayer.backgroundColor = NSColor.white.cgColor
+            activeLayer.cornerRadius = activeHeight / 2
+            activeLayer.frame = leadRect
+            CATransaction.commit()
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
