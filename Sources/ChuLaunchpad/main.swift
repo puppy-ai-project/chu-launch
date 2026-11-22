@@ -2310,7 +2310,7 @@ private enum AppSortOrder: Int {
     @objc private func showMoreMenu() {
         guard searchCapsule.stringValue.isEmpty else { return }
         updateSortMenu()
-        moreMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: moreButton.bounds.minY), in: moreButton)
+        moreMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: moreButton.bounds.maxY + 6), in: moreButton)
     }
 
     private func updateMoreButton() {
