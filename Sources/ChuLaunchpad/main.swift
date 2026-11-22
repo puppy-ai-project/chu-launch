@@ -498,6 +498,18 @@ enum AnimationHelper {
         nameLabel.frame = NSRect(x: 4, y: startY + iconSize + spacing, width: bounds.width - 8, height: labelHeight)
     }
 
+    var highlightRect: NSRect {
+        let iconFrame = iconImageView.frame
+        let paddingX: CGFloat = 16
+        let paddingTop: CGFloat = 10
+        let paddingBottom: CGFloat = 10
+        let width = min(bounds.width - 6, iconFrame.width + paddingX * 2)
+        let top = max(2, iconFrame.minY - paddingTop)
+        let bottom = min(bounds.height - 2, nameLabel.frame.maxY + paddingBottom)
+        let x = floor((bounds.width - width) / 2)
+        return NSRect(x: x, y: top, width: width, height: max(1, bottom - top))
+    }
+
     func configure(app: AppRecord, icon: NSImage, onOpen: @escaping (AppRecord, AppItemView) -> Void) {
         self.appRecord = app
         self.onOpen = onOpen
@@ -648,6 +660,11 @@ enum AnimationHelper {
         return icon
     }()
     private var itemViews: [AppItemView] = []
+    private let hoverHighlightView = NSView()
+    private var hoverTrackingArea: NSTrackingArea?
+    private weak var hoveredItem: AppItemView?
+    private var lastHoverPoint: NSPoint?
+    private var hoverGeneration = 0
     var columns = 7
     var rows = 5
     var onBlankAreaClicked: (() -> Void)?
@@ -658,17 +675,49 @@ enum AnimationHelper {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
+        setupView()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        setupView()
+    }
+
+    private func setupView() {
         wantsLayer = true
+        hoverHighlightView.wantsLayer = true
+        hoverHighlightView.layer?.cornerRadius = 20
+        hoverHighlightView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        hoverHighlightView.layer?.borderWidth = 1
+        hoverHighlightView.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        hoverHighlightView.alphaValue = 0
+        addSubview(hoverHighlightView)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        hoverTrackingArea = area
     }
 
     func populate(apps: [AppRecord], folders: [String: [AppRecord]], iconCache: NSCache<NSString, NSImage>, onOpen: @escaping (AppRecord, AppItemView) -> Void) {
         for sub in itemViews { sub.removeFromSuperview() }
         itemViews.removeAll()
+        hoveredItem = nil
+        lastHoverPoint = nil
+        hoverHighlightView.alphaValue = 0
+        if hoverHighlightView.superview !== self {
+            addSubview(hoverHighlightView)
+        }
 
         for app in apps {
             let key = app.path as NSString
@@ -751,10 +800,129 @@ enum AnimationHelper {
             let y = startY + CGFloat(row) * cellHeight
             itemView.frame = NSRect(x: x, y: y, width: cellWidth, height: cellHeight)
         }
+        if let hoveredItem {
+            hoverHighlightView.frame = targetHighlightFrame(for: hoveredItem)
+        }
     }
 
+    override func mouseEntered(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        updateHover(at: point, windowPoint: event.locationInWindow)
+    }
 
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        updateHover(at: point, windowPoint: event.locationInWindow)
+    }
 
+    override func mouseExited(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        clearHover(animated: true, exitPoint: point)
+        lastHoverPoint = nil
+    }
+
+    func clearHover(animated: Bool = false, exitPoint: NSPoint? = nil) {
+        guard let oldItem = hoveredItem else {
+            if !animated {
+                hoverGeneration += 1
+                hoverHighlightView.alphaValue = 0
+            }
+            return
+        }
+        hoveredItem = nil
+        hoverGeneration += 1
+        let baseFrame = targetHighlightFrame(for: oldItem)
+        guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            hoverHighlightView.alphaValue = 0
+            return
+        }
+        let targetPoint = exitPoint ?? lastHoverPoint ?? NSPoint(x: oldItem.frame.midX, y: oldItem.frame.midY)
+        let offset = directionalOffset(from: NSPoint(x: oldItem.frame.midX, y: oldItem.frame.midY), to: targetPoint, magnitude: 22)
+        let exitFrame = baseFrame.offsetBy(dx: offset.x, dy: offset.y)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            hoverHighlightView.animator().frame = exitFrame
+            hoverHighlightView.animator().alphaValue = 0
+        }
+    }
+
+    private func updateHover(at point: NSPoint, windowPoint: NSPoint) {
+        guard let window, window.isVisible, !isHiddenOrHasHiddenAncestor,
+              let hit = window.contentView?.hitTest(windowPoint), hit.isDescendant(of: self) else {
+            clearHover(animated: true, exitPoint: point)
+            lastHoverPoint = nil
+            return
+        }
+
+        let targetItem = itemViews.first { $0.frame.contains(point) }
+        guard let targetItem else {
+            clearHover(animated: true, exitPoint: point)
+            lastHoverPoint = point
+            return
+        }
+
+        if targetItem === hoveredItem {
+            lastHoverPoint = point
+            return
+        }
+
+        let targetFrame = targetHighlightFrame(for: targetItem)
+        let previousItem = hoveredItem
+        hoveredItem = targetItem
+        hoverGeneration += 1
+
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            hoverHighlightView.frame = targetFrame
+            hoverHighlightView.alphaValue = 1
+            lastHoverPoint = point
+            return
+        }
+
+        if previousItem != nil || hoverHighlightView.alphaValue > 0.05 {
+            // 从已有高亮状态按鼠标移动方向平滑滑向新应用
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+                hoverHighlightView.animator().frame = targetFrame
+                hoverHighlightView.animator().alphaValue = 1.0
+            }
+        } else {
+            // 首次进入时从鼠标进入方向滑入
+            let center = NSPoint(x: targetItem.frame.midX, y: targetItem.frame.midY)
+            let fromPoint = lastHoverPoint ?? point
+            let offset: NSPoint
+            if lastHoverPoint != nil, hypot(point.x - fromPoint.x, point.y - fromPoint.y) > 1 {
+                let dir = directionalOffset(from: point, to: fromPoint, magnitude: 18)
+                offset = dir
+            } else {
+                offset = directionalOffset(from: center, to: point, magnitude: 18)
+            }
+            hoverHighlightView.frame = targetFrame.offsetBy(dx: offset.x, dy: offset.y)
+            hoverHighlightView.alphaValue = 0
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.20
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+                hoverHighlightView.animator().frame = targetFrame
+                hoverHighlightView.animator().alphaValue = 1.0
+            }
+        }
+        lastHoverPoint = point
+    }
+
+    private func targetHighlightFrame(for itemView: AppItemView) -> NSRect {
+        itemView.layoutSubtreeIfNeeded()
+        let local = itemView.highlightRect
+        return convert(local, from: itemView)
+    }
+
+    private func directionalOffset(from origin: NSPoint, to target: NSPoint, magnitude: CGFloat) -> NSPoint {
+        let dx = target.x - origin.x
+        let dy = target.y - origin.y
+        let length = hypot(dx, dy)
+        guard length > 0.5 else { return .zero }
+        return NSPoint(x: dx / length * magnitude, y: dy / length * magnitude)
+    }
 }
 
 // MARK: - 多页横向全屏平移容器 (Paged Container View)
@@ -769,6 +937,7 @@ enum AnimationHelper {
     private(set) var pageCount = 1
 
     var onPageChanged: ((Int) -> Void)?
+    var onScrollProgressChanged: ((CGFloat) -> Void)?
     var onOpenApp: ((AppRecord, AppItemView) -> Void)?
     var onBlankAreaClicked: (() -> Void)?
 
@@ -924,9 +1093,16 @@ enum AnimationHelper {
         }
     }
 
+    func clearHover() {
+        for pageView in pageViews {
+            pageView.clearHover(animated: false)
+        }
+    }
+
     // MARK: - 翻页与平滑滑动动画
     func scrollToPage(_ index: Int, animated: Bool = true) {
         guard index >= 0, index < pageCount else { return }
+        clearHover()
         let screenWidth = bounds.width
         let targetX = -CGFloat(index) * screenWidth
 
@@ -981,6 +1157,7 @@ enum AnimationHelper {
     }
 
     func beginMouseDrag(_ event: NSEvent) {
+        clearHover()
         if let layer = pagesTrackView.layer, let position = layer.presentation()?.position, isAnimating {
             animationGeneration += 1
             layer.removeAnimation(forKey: "pageScroll")
@@ -1002,6 +1179,8 @@ enum AnimationHelper {
         let minimum = -CGFloat(pageCount - 1) * bounds.width
         let position = proposed > 0 ? proposed * 0.28 : (proposed < minimum ? minimum + (proposed - minimum) * 0.28 : proposed)
         pagesTrackView.frame.origin.x = position
+        let progress = max(0, min(CGFloat(pageCount - 1), -position / max(1, bounds.width)))
+        onScrollProgressChanged?(progress)
     }
 
     func endMouseDrag(_ event: NSEvent) {
@@ -1034,6 +1213,7 @@ enum AnimationHelper {
             if abs(deltaX) < abs(deltaY) && abs(deltaY) > 5 {
                 return false
             }
+            clearHover()
             if let layer = pagesTrackView.layer, let position = layer.presentation()?.position, isAnimating {
                 animationGeneration += 1
                 layer.removeAnimation(forKey: "pageScroll")
@@ -1063,6 +1243,8 @@ enum AnimationHelper {
             }
 
             pagesTrackView.frame.origin.x = finalX
+            let progress = max(0, min(CGFloat(pageCount - 1), -finalX / max(1, screenWidth)))
+            onScrollProgressChanged?(progress)
 
         case .ended, .cancelled:
             guard isDragging else { return false }
@@ -1090,51 +1272,218 @@ enum AnimationHelper {
 
 // MARK: - 原生分页圆点指示器 (Page Dots Indicator)
 @MainActor final class PageIndicator: NSView {
+    private let inactiveDiameter: CGFloat = 6
+    private let activeWidth: CGFloat = 14
+    private let activeHeight: CGFloat = 8
+    private let baseSpacing: CGFloat = 18
+
+    private var dotLayers: [CALayer] = []
+    private let activeLayer = CALayer()
+    private var isDraggingProgress = false
+
     var current = 0 {
-        didSet { if oldValue != current { needsDisplay = true } }
+        didSet {
+            let clamped = max(0, min(max(0, count - 1), current))
+            if clamped != current {
+                current = clamped
+                return
+            }
+            if oldValue != current || isDraggingProgress {
+                isDraggingProgress = false
+                updateActiveDot(animated: true)
+            }
+        }
     }
     var count = 1 {
         didSet {
             isHidden = (count <= 1)
-            needsDisplay = true
+            if oldValue != count {
+                rebuildDots()
+            }
         }
     }
     var onSelect: ((Int) -> Void)?
 
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        guard count > 1 else { return }
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupView()
+    }
 
-        let dotDiameter: CGFloat = 7
-        let spacing: CGFloat = 16
-        let totalWidth = CGFloat(count - 1) * spacing + dotDiameter
-        let startX = floor(bounds.midX - totalWidth / 2)
-        let centerY = floor(bounds.midY)
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupView()
+    }
 
-        for index in 0..<count {
-            let x = startX + CGFloat(index) * spacing
-            let rect = NSRect(x: x, y: centerY - dotDiameter / 2, width: dotDiameter, height: dotDiameter)
-            let path = NSBezierPath(ovalIn: rect)
+    private func setupView() {
+        wantsLayer = true
+        activeLayer.backgroundColor = NSColor.white.cgColor
+        activeLayer.cornerRadius = activeHeight / 2
+        activeLayer.bounds = CGRect(x: 0, y: 0, width: activeWidth, height: activeHeight)
+        layer?.addSublayer(activeLayer)
+    }
 
-            if index == current {
-                NSColor.white.setFill()
-            } else {
-                NSColor.white.withAlphaComponent(0.38).setFill()
-            }
-            path.fill()
+    private static func effectiveSpacing(count: Int, width: CGFloat) -> CGFloat {
+        guard count > 1 else { return 18 }
+        let maxTotal = max(1, width - 16)
+        return min(18, maxTotal / CGFloat(count - 1))
+    }
+
+    private func dotCenterX(for index: CGFloat) -> CGFloat {
+        let spacing = Self.effectiveSpacing(count: count, width: bounds.width)
+        let totalSpan = CGFloat(max(0, count - 1)) * spacing
+        let startCenterX = bounds.midX - totalSpan / 2
+        return startCenterX + index * spacing
+    }
+
+    private func rebuildDots() {
+        for dot in dotLayers { dot.removeFromSuperlayer() }
+        dotLayers.removeAll()
+        activeLayer.removeAnimation(forKey: "stickyMove")
+        isDraggingProgress = false
+
+        guard count > 1, let rootLayer = layer else {
+            activeLayer.isHidden = true
+            return
         }
+        activeLayer.isHidden = false
+
+        for _ in 0..<count {
+            let dot = CALayer()
+            dot.backgroundColor = NSColor.white.withAlphaComponent(0.38).cgColor
+            dot.bounds = CGRect(x: 0, y: 0, width: inactiveDiameter, height: inactiveDiameter)
+            dot.cornerRadius = inactiveDiameter / 2
+            rootLayer.insertSublayer(dot, below: activeLayer)
+            dotLayers.append(dot)
+        }
+        layoutDots()
+        updateActiveDot(animated: false)
+    }
+
+    private func layoutDots() {
+        guard count > 1 else { return }
+        let centerY = bounds.midY
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (index, dot) in dotLayers.enumerated() {
+            dot.position = CGPoint(x: dotCenterX(for: CGFloat(index)), y: centerY)
+        }
+        CATransaction.commit()
+    }
+
+    override func layout() {
+        super.layout()
+        layoutDots()
+        if activeLayer.animation(forKey: "stickyMove") == nil && !isDraggingProgress {
+            updateActiveDot(animated: false)
+        }
+    }
+
+    func setProgress(_ progress: CGFloat) {
+        guard count > 1, bounds.width > 0 else { return }
+        isDraggingProgress = true
+        activeLayer.removeAnimation(forKey: "stickyMove")
+        let clamped = max(0, min(CGFloat(count - 1), progress))
+        let cx = dotCenterX(for: clamped)
+        let frac = clamped - floor(clamped)
+        let spacing = Self.effectiveSpacing(count: count, width: bounds.width)
+        let stretch = sin(frac * .pi) * (spacing * 0.55)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        activeLayer.position = CGPoint(x: cx, y: bounds.midY)
+        activeLayer.bounds = CGRect(x: 0, y: 0, width: activeWidth + stretch, height: activeHeight)
+        CATransaction.commit()
+    }
+
+    private func updateActiveDot(animated: Bool) {
+        guard count > 1, bounds.width > 0 else { return }
+        let targetIndex = max(0, min(count - 1, current))
+        let toX = dotCenterX(for: CGFloat(targetIndex))
+        let centerY = bounds.midY
+
+        guard animated,
+              !isHidden,
+              let window, window.isVisible,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            activeLayer.removeAnimation(forKey: "stickyMove")
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            activeLayer.position = CGPoint(x: toX, y: centerY)
+            activeLayer.bounds = CGRect(x: 0, y: 0, width: activeWidth, height: activeHeight)
+            CATransaction.commit()
+            return
+        }
+
+        let presX = activeLayer.presentation()?.position.x ?? activeLayer.position.x
+        let presW = activeLayer.presentation()?.bounds.width ?? activeLayer.bounds.width
+        if abs(toX - presX) < 0.5 && abs(activeWidth - presW) < 0.5 {
+            activeLayer.removeAnimation(forKey: "stickyMove")
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            activeLayer.position = CGPoint(x: toX, y: centerY)
+            activeLayer.bounds = CGRect(x: 0, y: 0, width: activeWidth, height: activeHeight)
+            CATransaction.commit()
+            return
+        }
+
+        let steps = 24
+        var xValues: [CGFloat] = []
+        var sizeValues: [NSValue] = []
+        xValues.reserveCapacity(steps + 1)
+        sizeValues.reserveCapacity(steps + 1)
+
+        let fromLeft = presX - presW / 2
+        let fromRight = presX + presW / 2
+        let toLeft = toX - activeWidth / 2
+        let toRight = toX + activeWidth / 2
+
+        for i in 0...steps {
+            let u = CGFloat(i) / CGFloat(steps)
+            // 前缘快速伸出、后缘粘滞跟随的弹性拉伸曲线
+            let leadT = 1 - pow(1 - u, 2.8)
+            let trailT = pow(u, 2.2)
+
+            let left: CGFloat
+            let right: CGFloat
+            if toX >= presX {
+                right = fromRight + (toRight - fromRight) * leadT
+                left = fromLeft + (toLeft - fromLeft) * trailT
+            } else {
+                left = fromLeft + (toLeft - fromLeft) * leadT
+                right = fromRight + (toRight - fromRight) * trailT
+            }
+            let width = max(activeHeight, right - left)
+            let cx = (left + right) / 2
+            xValues.append(cx)
+            sizeValues.append(NSValue(size: NSSize(width: width, height: activeHeight)))
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        activeLayer.position = CGPoint(x: toX, y: centerY)
+        activeLayer.bounds = CGRect(x: 0, y: 0, width: activeWidth, height: activeHeight)
+        CATransaction.commit()
+
+        let posAnim = CAKeyframeAnimation(keyPath: "position.x")
+        posAnim.values = xValues
+        posAnim.calculationMode = .linear
+
+        let sizeAnim = CAKeyframeAnimation(keyPath: "bounds.size")
+        sizeAnim.values = sizeValues
+        sizeAnim.calculationMode = .linear
+
+        let group = CAAnimationGroup()
+        group.animations = [posAnim, sizeAnim]
+        group.duration = 0.35
+        activeLayer.add(group, forKey: "stickyMove")
     }
 
     override func mouseUp(with event: NSEvent) {
         guard count > 1 else { return }
         let x = convert(event.locationInWindow, from: nil).x
-        let spacing: CGFloat = 16
-        let dotDiameter: CGFloat = 7
-        let totalWidth = CGFloat(count - 1) * spacing + dotDiameter
-        let startX = bounds.midX - totalWidth / 2
-
-        let relativeX = x - startX
-        let index = Int((relativeX / spacing).rounded())
+        let spacing = Self.effectiveSpacing(count: count, width: bounds.width)
+        let startCenterX = dotCenterX(for: 0)
+        let index = Int(((x - startCenterX) / spacing).rounded())
         if index >= 0 && index < count {
             onSelect?(index)
         }
@@ -1526,6 +1875,9 @@ private enum AppSortOrder: Int {
             self?.pageIndicator.current = page
             self?.scheduleBackdropWarmup()
         }
+        pagedContainer.onScrollProgressChanged = { [weak self] progress in
+            self?.pageIndicator.setProgress(progress)
+        }
         pagedContainer.onOpenApp = { [weak self] app, itemView in
             self?.activate(app, from: itemView)
         }
@@ -1550,6 +1902,7 @@ private enum AppSortOrder: Int {
         folderPages.onOpenApp = { [weak self] app, itemView in self?.open(app, from: itemView) }
         folderPages.onBlankAreaClicked = { [weak self] in self?.closeFolder() }
         folderPages.onPageChanged = { [weak self] page in self?.folderIndicator.current = page }
+        folderPages.onScrollProgressChanged = { [weak self] progress in self?.folderIndicator.setProgress(progress) }
         folderIndicator.onSelect = { [weak self] page in self?.folderPages.scrollToPage(page) }
 
         // 底部分页圆点指示器（原生仅圆点，无箭头）
@@ -2141,6 +2494,8 @@ private enum AppSortOrder: Int {
     }
 
     private func hide(completion: (@MainActor () -> Void)? = nil) {
+        pagedContainer.clearHover()
+        folderPages.clearHover()
         if !window.isVisible {
             showRequestGeneration += 1
             launcherTargetVisible = false
@@ -2435,6 +2790,7 @@ private enum AppSortOrder: Int {
             return
         }
         guard let source = itemView ?? pagedContainer.findItemView(for: app) else { return }
+        pagedContainer.clearHover()
         pagedContainer.layoutSubtreeIfNeeded()
         backdropWarmup?.cancel()
         folderSourceRect = source.convert(source.folderThumbnailFrame, to: folderBackdrop)
