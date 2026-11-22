@@ -420,11 +420,7 @@ enum AnimationHelper {
         searchField.autoresizingMask = [.width]
 
         // 占位文字：浅灰白色
-        let placeholderAttributes: [NSAttributedString.Key: Any] = [
-            .foregroundColor: NSColor.white.withAlphaComponent(0.48),
-            .font: NSFont.systemFont(ofSize: 13, weight: .regular)
-        ]
-        searchField.placeholderAttributedString = NSAttributedString(string: "搜索应用", attributes: placeholderAttributes)
+        setPlaceholder("搜索应用")
 
         addSubview(searchField)
 
@@ -451,6 +447,14 @@ enum AnimationHelper {
 
     func makeFirstResponder() {
         window?.makeFirstResponder(searchField)
+    }
+
+    func setPlaceholder(_ text: String) {
+        let placeholderAttributes: [NSAttributedString.Key: Any] = [
+            .foregroundColor: NSColor.white.withAlphaComponent(0.48),
+            .font: NSFont.systemFont(ofSize: 13, weight: .regular)
+        ]
+        searchField.placeholderAttributedString = NSAttributedString(string: text, attributes: placeholderAttributes)
     }
 
     func controlTextDidChange(_ obj: Notification) {
@@ -1783,7 +1787,11 @@ struct FolderAppearance: Codable, Sendable {
         if let panel, panel.frame.contains(point), let target = panel.hitTest(point) { return target }
         return self
     }
-    override func mouseUp(with event: NSEvent) { onDismiss?(convert(event.locationInWindow, from: nil)) }
+    override func mouseUp(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if let panel, panel.frame.contains(point) { return }
+        onDismiss?(point)
+    }
 }
 
 @MainActor final class FolderOverlayController {
@@ -1792,6 +1800,7 @@ struct FolderAppearance: Codable, Sendable {
     let root = FolderBackdropView()
     let panel = NSView()
     let title = NSTextField(labelWithString: "")
+    let searchCapsule = SearchCapsuleView(frame: .zero)
     let pages = PagedContainerView()
     let indicator = PageIndicator()
     var underlyingControls: [NSView] = []
@@ -1813,11 +1822,14 @@ struct FolderAppearance: Codable, Sendable {
         title.font = .systemFont(ofSize: 24, weight: .medium)
         title.textColor = .white
         title.wantsLayer = true
+        searchCapsule.wantsLayer = true
+        searchCapsule.setPlaceholder("搜索当前目录")
         indicator.wantsLayer = true
         pages.columns = 6
         pages.rows = 3
         pages.layer?.masksToBounds = true
         panel.addSubview(title)
+        panel.addSubview(searchCapsule)
         panel.addSubview(pages)
         panel.addSubview(indicator)
     }
@@ -1850,7 +1862,7 @@ struct FolderAppearance: Codable, Sendable {
         let opacity: Float = opening ? 1 : 0
         // Fade the grid as one layer while the panel is still close to full size.
         let contentDuration = reduced || opening ? duration : duration * 0.38
-        for layer in [pages.layer, title.layer, indicator.layer].compactMap({ $0 }) {
+        for layer in [pages.layer, title.layer, searchCapsule.layer, indicator.layer].compactMap({ $0 }) {
             LauncherTransition.set(layer, keyPath: "opacity", value: opacity,
                                    duration: initial ? 0 : contentDuration, curve: curve)
         }
@@ -2018,6 +2030,7 @@ private enum AppSortOrder: Int {
     private var folderBackdrop: FolderBackdropView { folderOverlay.root }
     private var folderPanel: NSView { folderOverlay.panel }
     private var folderTitle: NSTextField { folderOverlay.title }
+    private var folderSearchCapsule: SearchCapsuleView { folderOverlay.searchCapsule }
     private var folderPages: PagedContainerView { folderOverlay.pages }
     private var folderIndicator: PageIndicator { folderOverlay.indicator }
     private var activePages: PagedContainerView { openFolder == nil ? pagedContainer : folderPages }
@@ -2155,10 +2168,25 @@ private enum AppSortOrder: Int {
         folderOverlay.onClosed = { [weak self] in
             guard let self else { return }
             self.openFolder = nil
+            self.folderSearchCapsule.stringValue = ""
             self.updateMoreButton()
             self.displayed = self.folderMainItems
             if let query = self.pendingQuery { self.pendingQuery = nil; self.filter(query: query) }
             if self.pendingRefresh { self.pendingRefresh = false; self.refresh() }
+            if self.window.isVisible, self.settingsPanel == nil {
+                self.searchCapsule.makeFirstResponder()
+            }
+        }
+        folderSearchCapsule.onQueryChanged = { [weak self] query in
+            self?.filterFolder(query: query)
+        }
+        folderSearchCapsule.onEscapePressed = { [weak self] in
+            guard let self else { return }
+            if !self.folderSearchCapsule.stringValue.isEmpty {
+                self.folderSearchCapsule.stringValue = ""
+            } else {
+                self.closeFolder()
+            }
         }
         folderPages.onOpenApp = { [weak self] app, itemView in self?.open(app, from: itemView) }
         folderPages.onBlankAreaClicked = { [weak self] in self?.closeFolder() }
@@ -2638,10 +2666,14 @@ private enum AppSortOrder: Int {
             }
             // Esc 键
             if event.keyCode == 53 {
-                if !self.searchCapsule.stringValue.isEmpty {
+                if self.openFolder != nil {
+                    if !self.folderSearchCapsule.stringValue.isEmpty {
+                        self.folderSearchCapsule.stringValue = ""
+                    } else {
+                        self.closeFolder()
+                    }
+                } else if !self.searchCapsule.stringValue.isEmpty {
                     self.searchCapsule.stringValue = ""
-                } else if self.openFolder != nil {
-                    self.closeFolder()
                 } else {
                     self.hide()
                 }
@@ -2656,12 +2688,13 @@ private enum AppSortOrder: Int {
                     return nil
                 }
             }
-            // 左右方向键翻页（搜索框为空时）
-            if event.keyCode == 123 && self.searchCapsule.stringValue.isEmpty {
+            // 左右方向键翻页（当前搜索框为空时）
+            let activeQueryEmpty = self.openFolder == nil ? self.searchCapsule.stringValue.isEmpty : self.folderSearchCapsule.stringValue.isEmpty
+            if event.keyCode == 123 && activeQueryEmpty {
                 self.activePages.previousPage()
                 return nil
             }
-            if event.keyCode == 124 && self.searchCapsule.stringValue.isEmpty {
+            if event.keyCode == 124 && activeQueryEmpty {
                 self.activePages.nextPage()
                 return nil
             }
@@ -3043,11 +3076,25 @@ private enum AppSortOrder: Int {
         pageIndicator.current = pagedContainer.currentPage
     }
 
+    private func filterFolder(query: String) {
+        guard let folder = openFolder, let contents = folderContents[folder] else { return }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matched = trimmed.isEmpty ? contents : contents.filter { $0.name.localizedStandardContains(trimmed) }
+        displayed = matched
+        folderPages.reloadPages(apps: matched, folders: [:], iconCache: iconCache, targetPage: 0)
+        loadedFolderItems = matched
+        folderIndicator.count = folderPages.pageCount
+        folderIndicator.current = folderPages.currentPage
+    }
+
     private func activate(_ app: AppRecord, from itemView: AppItemView? = nil) {
         guard app.path.hasPrefix("chu-folder:") else { open(app, from: itemView); return }
         guard let contents = folderContents[app.name] else { return }
         if openFolder != nil {
-            if folderClosing && openFolder == app.name { animateFolder(opening: true) }
+            if folderClosing && openFolder == app.name {
+                animateFolder(opening: true)
+                folderSearchCapsule.makeFirstResponder()
+            }
             return
         }
         guard let source = itemView ?? pagedContainer.findItemView(for: app) else { return }
@@ -3056,6 +3103,7 @@ private enum AppSortOrder: Int {
         backdropWarmup?.cancel()
         folderSourceRect = source.convert(source.folderThumbnailFrame, to: folderBackdrop)
         folderMainItems = displayed
+        folderSearchCapsule.stringValue = ""
         openFolder = app.name
         updateMoreButton()
         folderTitle.stringValue = app.name
@@ -3076,6 +3124,7 @@ private enum AppSortOrder: Int {
 
         folderOverlay.underlyingControls = [pagedContainer, searchCapsule, pageIndicator]
         folderOverlay.present(from: folderSourceRect)
+        folderSearchCapsule.makeFirstResponder()
     }
 
     private func animateFolder(opening: Bool) {
@@ -3087,8 +3136,10 @@ private enum AppSortOrder: Int {
         let width = max(1, min(available.width, 1140))
         let height = max(1, min(available.height, min(680, available.height * 0.72)))
         folderPanel.frame = NSRect(x: available.midX - width / 2, y: available.midY - height / 2, width: width, height: height)
-        folderTitle.frame = NSRect(x: 0, y: height - 60, width: width, height: 30)
-        folderPages.frame = NSRect(x: 20, y: 42, width: width - 40, height: max(1, height - 115))
+        folderTitle.frame = NSRect(x: 0, y: height - 54, width: width, height: 28)
+        let searchWidth = min(240, max(120, width - 40))
+        folderSearchCapsule.frame = NSRect(x: floor((width - searchWidth) / 2), y: height - 92, width: searchWidth, height: 30)
+        folderPages.frame = NSRect(x: 20, y: 42, width: width - 40, height: max(1, height - 142))
         folderIndicator.frame = NSRect(x: (width - 200) / 2, y: 10, width: 200, height: 20)
     }
 
