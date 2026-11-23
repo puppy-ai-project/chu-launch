@@ -975,12 +975,12 @@ enum AnimationHelper {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let appRecord else { return nil }
-        let selectedApps = (!isInsideFolder && !appRecord.path.hasPrefix("chu-folder:"))
+        let selectedApps = !appRecord.path.hasPrefix("chu-folder:")
             ? ((NSApp.delegate as? AppDelegate)?.prepareSelectionForContextMenu(appRecord, itemView: self) ?? [appRecord])
             : [appRecord]
         let hasMultipleSelection = selectedApps.count > 1
         let menu = NSMenu()
-        if hasMultipleSelection && !isInsideFolder && !appRecord.path.hasPrefix("chu-folder:") {
+        if hasMultipleSelection && !appRecord.path.hasPrefix("chu-folder:") {
             let selectionCount = selectedApps.count
             let selectionLabel = menu.addItem(withTitle: "已选择 \(selectionCount) 个应用", action: nil, keyEquivalent: "")
             selectionLabel.isEnabled = false
@@ -992,7 +992,7 @@ enum AnimationHelper {
             let ungroup = submenu.addItem(withTitle: "无分组", action: #selector(AppDelegate.moveSelectionToFolderMenu(_:)), keyEquivalent: "")
             ungroup.target = NSApp.delegate
             ungroup.representedObject = ""
-            for name in availableFolders {
+            for name in availableFolders where !isInsideFolder || name != appRecord.folder {
                 let item = submenu.addItem(withTitle: name, action: #selector(AppDelegate.moveSelectionToFolderMenu(_:)), keyEquivalent: "")
                 item.target = NSApp.delegate
                 item.representedObject = name
@@ -2690,6 +2690,7 @@ private enum AppSortOrder: Int {
         }
         folderOverlay.onClosed = { [weak self] in
             guard let self else { return }
+            self.clearMultiSelection()
             self.openFolder = nil
             self.pendingIconRefresh = false
             self.folderSearchCapsule.stringValue = ""
@@ -3247,7 +3248,6 @@ private enum AppSortOrder: Int {
                     return nil
                 }
                 if !self.pointerDragging, wasCommandSelecting,
-                   self.openFolder == nil,
                    let item = self.pointerItem,
                    let app = item.appRecord,
                    !app.path.hasPrefix("chu-folder:") {
@@ -3960,6 +3960,11 @@ private enum AppSortOrder: Int {
         if let folder = openFolder {
             folderContents = Dictionary(grouping: apps.filter { $0.folder != nil }, by: { $0.folder! })
             folderContents[folder, default: []] = folderContents[folder] ?? []
+            if folderContents[folder]?.isEmpty == true {
+                clearMultiSelection()
+                closeFolder()
+                return
+            }
             loadedFolderItems = nil
             filterFolder(query: folderSearchCapsule.stringValue, targetPage: folderPages.currentPage)
             return
@@ -3984,17 +3989,17 @@ private enum AppSortOrder: Int {
     }
 
     func prepareSelectionForContextMenu(_ app: AppRecord, itemView: AppItemView) -> [AppRecord] {
-        guard openFolder == nil, !app.path.hasPrefix("chu-folder:") else { return [app] }
+        guard !app.path.hasPrefix("chu-folder:") else { return [app] }
         if !selectedAppPaths.contains(app.path) {
             selectedAppPaths = [app.path]
         }
         updateMultiSelectionAppearance()
         updateMoreButton()
-        return apps.filter { selectedAppPaths.contains($0.path) && !$0.path.hasPrefix("chu-folder:") }
+        return selectionScopeApps.filter { selectedAppPaths.contains($0.path) && !$0.path.hasPrefix("chu-folder:") }
     }
 
     @objc func createGroupFromSelectionMenu() {
-        let selected = apps.filter { selectedAppPaths.contains($0.path) && !$0.path.hasPrefix("chu-folder:") }
+        let selected = selectionScopeApps.filter { selectedAppPaths.contains($0.path) && !$0.path.hasPrefix("chu-folder:") }
         guard selected.count > 1 else { NSSound.beep(); return }
         let existingNames = Set(apps.compactMap(\.folder))
         let alert = NSAlert()
@@ -4017,7 +4022,7 @@ private enum AppSortOrder: Int {
 
     @objc func moveSelectionToFolderMenu(_ sender: NSMenuItem) {
         let folder = (sender.representedObject as? String).flatMap { $0.isEmpty ? nil : $0 }
-        let selected = apps.filter { selectedAppPaths.contains($0.path) && !$0.path.hasPrefix("chu-folder:") }
+        let selected = selectionScopeApps.filter { selectedAppPaths.contains($0.path) && !$0.path.hasPrefix("chu-folder:") }
         guard !selected.isEmpty else { return }
         for app in selected {
             if let folder {
@@ -4052,10 +4057,15 @@ private enum AppSortOrder: Int {
     }
 
     private func updateMultiSelectionAppearance() {
-        for item in pagedContainer.allItems {
+        for item in activePages.allItems {
             guard let path = item.appRecord?.path else { continue }
             item.setMultiSelected(selectedAppPaths.contains(path))
         }
+    }
+
+    private var selectionScopeApps: [AppRecord] {
+        if let openFolder { return folderContents[openFolder] ?? [] }
+        return displayed.filter { !$0.path.hasPrefix("chu-folder:") }
     }
 
     private func showRenameFolder(_ name: String, isDissolving: Bool = false) {
@@ -4160,6 +4170,9 @@ private enum AppSortOrder: Int {
         let matched = trimmed.isEmpty ? contents : contents.filter { $0.name.localizedStandardContains(trimmed) }
         displayed = matched
         folderPages.reloadPages(apps: matched, folders: folderContents, iconCache: iconCache, targetPage: targetPage, onCreateFolder: { [weak self] in self?.createFolder(containing: $0) }, onMoveToFolder: { [weak self] app, folder in self?.move(app, to: folder) })
+        for item in folderPages.allItems {
+            if let path = item.appRecord?.path { item.setMultiSelected(selectedAppPaths.contains(path)) }
+        }
         loadedFolderItems = matched
         folderIndicator.count = folderPages.pageCount
         folderIndicator.current = folderPages.currentPage
