@@ -1282,7 +1282,6 @@ enum AnimationHelper {
         for (index, app) in apps.prefix(9).enumerated() {
             let key = app.path as NSString
             let icon = iconCache.object(forKey: key) ?? applicationIcon
-            iconCache.setObject(icon, forKey: key)
             let x = inset + CGFloat(index % 3) * (size + gap)
             let y = 128 - inset - size - CGFloat(index / 3) * (size + gap)
             icon.draw(in: NSRect(x: x, y: y, width: size, height: size))
@@ -2516,6 +2515,7 @@ private enum AppSortOrder: Int {
     private var transitionGeneration = 0
     private var transitionInProgress = false
     private var pendingRefresh = false
+    private var pendingIconRefresh = false
     private var pendingQuery: String?
     private var backdropWarmup: Task<Void, Never>?
     private let storageQueue = DispatchQueue(label: "com.withqq.chu-launchpad.storage", qos: .utility)
@@ -2632,6 +2632,7 @@ private enum AppSortOrder: Int {
         folderOverlay.onClosed = { [weak self] in
             guard let self else { return }
             self.openFolder = nil
+            self.pendingIconRefresh = false
             self.folderSearchCapsule.stringValue = ""
             self.updateMoreButton()
             self.displayed = self.folderMainItems
@@ -3495,6 +3496,14 @@ private enum AppSortOrder: Int {
             completion?()
             if let query = self.pendingQuery { self.pendingQuery = nil; self.filter(query: query) }
             if self.pendingRefresh { self.pendingRefresh = false; self.refresh() }
+            if self.pendingIconRefresh {
+                self.pendingIconRefresh = false
+                if self.openFolder != nil {
+                    self.filterFolder(query: self.folderSearchCapsule.stringValue)
+                } else {
+                    self.filter(query: self.searchCapsule.stringValue, targetPage: self.pagedContainer.currentPage)
+                }
+            }
             if visible { self.scheduleBackdropWarmup() }
         }
         if visible { menuCover?.orderFrontRegardless() }
@@ -3753,11 +3762,16 @@ private enum AppSortOrder: Int {
                 return icons
             }.value
             guard generation == scanGeneration else { return }
-            if transitionInProgress || openFolder != nil { pendingRefresh = true; return }
             for (path, image) in icons {
                 iconCache.setObject(NSImage(cgImage: image, size: NSSize(width: 128, height: 128)), forKey: path as NSString)
             }
-            filter(query: searchCapsule.stringValue, targetPage: pagedContainer.currentPage)
+            if transitionInProgress {
+                pendingIconRefresh = true
+            } else if openFolder != nil {
+                filterFolder(query: folderSearchCapsule.stringValue)
+            } else {
+                filter(query: searchCapsule.stringValue, targetPage: pagedContainer.currentPage)
+            }
         }
     }
 
