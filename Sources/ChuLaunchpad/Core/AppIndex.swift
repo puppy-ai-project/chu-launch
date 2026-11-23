@@ -32,6 +32,15 @@ enum AppScanner {
         [URL(fileURLWithPath: "/Applications"), URL(fileURLWithPath: "/System/Applications"), FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")]
     }
 
+    static func isInsideApplicationDirectory(path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        return defaultRoots.contains { root in
+            let prefix = root.standardizedFileURL.path + "/"
+            guard url.path.hasPrefix(prefix) else { return false }
+            return url.path.dropFirst(prefix.count).contains("/")
+        }
+    }
+
     static func scan(roots: [URL] = defaultRoots) -> [AppRecord] {
         let fm = FileManager.default
         var found: [String: AppRecord] = [:]
@@ -59,9 +68,11 @@ struct Layout: Codable, Sendable {
     var paths: [String] = []
     /// 自定义目录归属映射：app.path -> 目录名称
     var folders: [String: String] = [:]
+    var ungroupedPaths: Set<String> = []
+    private(set) var needsMigration = false
 
     enum CodingKeys: String, CodingKey {
-        case version, paths, folders
+        case version, paths, folders, ungroupedPaths
     }
 
     init(version: Int = 1, paths: [String] = [], folders: [String: String] = [:]) {
@@ -75,6 +86,11 @@ struct Layout: Codable, Sendable {
         version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
         paths = try container.decodeIfPresent([String].self, forKey: .paths) ?? []
         folders = try container.decodeIfPresent([String: String].self, forKey: .folders) ?? [:]
+        ungroupedPaths = try container.decodeIfPresent(Set<String>.self, forKey: .ungroupedPaths) ?? []
+        let legacyUngrouped = folders.filter { $0.value.isEmpty }.map(\.key)
+        needsMigration = !legacyUngrouped.isEmpty
+        ungroupedPaths.formUnion(legacyUngrouped)
+        folders = folders.filter { !$0.value.isEmpty }
     }
 
     mutating func reconcile(_ apps: [AppRecord]) -> [AppRecord] {
@@ -87,9 +103,12 @@ struct Layout: Codable, Sendable {
         paths = preservedPaths + newPaths
         var ordered = paths.compactMap { byPath[$0] }
         folders = folders.filter { seen.contains($0.key) }
+        ungroupedPaths = ungroupedPaths.filter { seen.contains($0) && byPath[$0]?.folder != nil && folders[$0] == nil }
         for index in ordered.indices {
             if let override = folders[ordered[index].path] {
-                ordered[index].folder = override.isEmpty ? nil : override
+                ordered[index].folder = override
+            } else if ungroupedPaths.contains(ordered[index].path) {
+                ordered[index].folder = nil
             }
         }
         return ordered
@@ -122,6 +141,8 @@ struct Layout: Codable, Sendable {
             folders[targetApp.path] = folderName
         }
         folders[draggedApp.path] = folderName
+        ungroupedPaths.remove(draggedApp.path)
+        ungroupedPaths.remove(targetApp.path)
         return folderName
     }
 }

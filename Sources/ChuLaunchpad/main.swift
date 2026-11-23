@@ -504,6 +504,7 @@ enum AnimationHelper {
     var onFinish: ((String?) -> Void)?
 
     private let originalName: String
+    private let isDissolving: Bool
     private let existingNames: Set<String>
     private let cardWrapper = NSView()
     private let cardShell = NSView()
@@ -522,12 +523,13 @@ enum AnimationHelper {
     private static let cardWidth: CGFloat = 380
     private static let cardHeight: CGFloat = 272
 
-    init(frame: NSRect, name: String, icon: NSImage, existingNames: Set<String> = []) {
+    init(frame: NSRect, name: String, icon: NSImage, existingNames: Set<String> = [], isDissolving: Bool = false) {
         self.originalName = name
+        self.isDissolving = isDissolving
         self.existingNames = existingNames
-        self.field = NSTextField(string: name)
+        self.field = NSTextField(string: isDissolving ? "" : name)
         self.cancelButton = SettingsActionButton(frame: NSRect(x: 24, y: 220, width: 160, height: 34), style: .secondary, title: "取消")
-        self.confirmButton = SettingsActionButton(frame: NSRect(x: 196, y: 220, width: 160, height: 34), style: .primary, title: "完成")
+        self.confirmButton = SettingsActionButton(frame: NSRect(x: 196, y: 220, width: 160, height: 34), style: .primary, title: isDissolving ? "确认解散" : "完成")
         super.init(frame: frame)
         setupHierarchy(name: name, icon: icon)
         applyTheme()
@@ -587,13 +589,14 @@ enum AnimationHelper {
         flippedShell.addSubview(iconHolder)
 
         // 居中标题与副标题
+        titleLabel.stringValue = isDissolving ? "解散分组" : "重命名分组"
         titleLabel.font = .systemFont(ofSize: 16.5, weight: .bold)
         titleLabel.textColor = .labelColor
         titleLabel.alignment = .center
         titleLabel.frame = NSRect(x: 24, y: 98, width: Self.cardWidth - 48, height: 22)
         flippedShell.addSubview(titleLabel)
 
-        subtitleLabel.stringValue = "输入新的分组名称，按回车确认"
+        subtitleLabel.stringValue = isDissolving ? "输入“确认”后解散“\(name)”，应用将移回一级" : "输入新的分组名称，按回车确认"
         subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
         subtitleLabel.textColor = .secondaryLabelColor
         subtitleLabel.alignment = .center
@@ -629,7 +632,7 @@ enum AnimationHelper {
         clearButton.target = self
         clearButton.action = #selector(clearText)
         clearButton.frame = NSRect(x: fieldContainer.bounds.width - 28, y: 9, width: 20, height: 20)
-        clearButton.isHidden = name.isEmpty
+        clearButton.isHidden = field.stringValue.isEmpty
         fieldContainer.addSubview(clearButton)
 
         // 重名提示
@@ -754,7 +757,10 @@ enum AnimationHelper {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         clearButton.isHidden = raw.isEmpty
 
-        if trimmed.isEmpty {
+        if isDissolving {
+            errorLabel.isHidden = true
+            confirmButton.isEnabled = raw == "确认"
+        } else if trimmed.isEmpty {
             errorLabel.isHidden = true
             confirmButton.isEnabled = false
         } else if trimmed != originalName && existingNames.contains(trimmed) {
@@ -791,7 +797,7 @@ enum AnimationHelper {
     @objc func cancel() { dismiss(result: nil) }
     @objc func confirm() {
         let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !(trimmed != originalName && existingNames.contains(trimmed)) else {
+        guard isDissolving ? field.stringValue == "确认" : (!trimmed.isEmpty && !(trimmed != originalName && existingNames.contains(trimmed))) else {
             NSSound.beep()
             return
         }
@@ -973,6 +979,9 @@ enum AnimationHelper {
             let rename = menu.addItem(withTitle: "重命名分组", action: #selector(renameFolderFromMenu), keyEquivalent: "")
             rename.target = self
             MenuSymbols.apply("pencil", to: rename)
+            let dissolve = menu.addItem(withTitle: "解散分组", action: #selector(dissolveFolderFromMenu), keyEquivalent: "")
+            dissolve.target = self
+            MenuSymbols.apply("folder.badge.minus", to: dissolve)
             menu.addItem(.separator())
         }
         for (title, action, symbol) in [
@@ -997,6 +1006,10 @@ enum AnimationHelper {
     @objc private func renameFolderFromMenu() {
         guard let appRecord, appRecord.path.hasPrefix("chu-folder:") else { return }
         onMoveToFolder?(appRecord, "rename:")
+    }
+
+    @objc private func dissolveFolderFromMenu() {
+        if let appRecord { onMoveToFolder?(appRecord, "dissolve:") }
     }
 
     @objc private func openFromMenu() {
@@ -2704,6 +2717,10 @@ private enum AppSortOrder: Int {
         LaunchAtLoginManager.migrateLegacyLoginItem()
 
         layout = LayoutStore.load()
+        if layout.needsMigration {
+            do { try LayoutStore.save(layout) }
+            catch { logger.error("Could not migrate app layout: \(error.localizedDescription, privacy: .public)") }
+        }
         do {
             if let cachedApps = try AppIndexStore.load() {
                 apps = layout.reconcile(cachedApps)
@@ -3705,12 +3722,13 @@ private enum AppSortOrder: Int {
             if transitionInProgress || openFolder != nil { pendingRefresh = true; return }
             let oldPaths = layout.paths
             let oldFolders = layout.folders
+            let oldUngroupedPaths = layout.ungroupedPaths
             apps = layout.reconcile(result)
             applyCurrentSort()
             loadedFolderItems = nil
-            if oldPaths != layout.paths || oldFolders != layout.folders {
-                let snapshot = layout
-                storageQueue.async { try? LayoutStore.save(snapshot) }
+            if oldPaths != layout.paths || oldFolders != layout.folders || oldUngroupedPaths != layout.ungroupedPaths {
+                do { try LayoutStore.save(layout) }
+                catch { logger.error("Could not save app layout: \(error.localizedDescription, privacy: .public)") }
                 iconCache.removeAllObjects()
             }
             filter(query: searchCapsule.stringValue)
@@ -3796,7 +3814,9 @@ private enum AppSortOrder: Int {
         }
         for index in apps.indices {
             if let override = layout.folders[apps[index].path] {
-                apps[index].folder = override.isEmpty ? nil : override
+                apps[index].folder = override
+            } else if layout.ungroupedPaths.contains(apps[index].path) {
+                apps[index].folder = nil
             }
         }
         if let folder = openFolder {
@@ -3821,14 +3841,15 @@ private enum AppSortOrder: Int {
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         layout.folders[app.path] = name
+        layout.ungroupedPaths.remove(app.path)
         persistLayoutAndRefresh()
     }
 
-    private func showRenameFolder(_ name: String) {
+    private func showRenameFolder(_ name: String, isDissolving: Bool = false) {
         guard renamePanel == nil else { return }
         let icon = PageGridView.folderIcon(apps: apps.filter { $0.folder == name }, iconCache: iconCache)
         let existingNames = Set(apps.compactMap(\.folder))
-        let panel = FolderRenameView(frame: backgroundView.bounds, name: name, icon: icon, existingNames: existingNames)
+        let panel = FolderRenameView(frame: backgroundView.bounds, name: name, icon: icon, existingNames: existingNames, isDissolving: isDissolving)
         panel.autoresizingMask = [.width, .height]
         panel.onFinish = { [weak self, weak panel] newName in
             guard let self else { return }
@@ -3838,7 +3859,8 @@ private enum AppSortOrder: Int {
                 self.menuSettingsShade?.isHidden = true
             }
             if let newName {
-                self.move(AppRecord(path: "chu-folder:" + name, name: name), to: "rename:" + newName)
+                if isDissolving { self.dissolveFolder(name) }
+                else { self.move(AppRecord(path: "chu-folder:" + name, name: name), to: "rename:" + newName) }
             }
         }
         menuSettingsShade?.isHidden = false
@@ -3846,7 +3868,7 @@ private enum AppSortOrder: Int {
         renamePanel = panel
         panel.present()
         window.makeFirstResponder(panel.field)
-        panel.field.currentEditor()?.selectAll(nil)
+        if !isDissolving { panel.field.currentEditor()?.selectAll(nil) }
     }
 
     private func renameOpenFolder() {
@@ -3856,7 +3878,9 @@ private enum AppSortOrder: Int {
 
     private func move(_ app: AppRecord, to folder: String?) {
         if app.path.hasPrefix("chu-folder:") {
-            guard let folder, folder.hasPrefix("rename:") else { return }
+            guard let folder else { return }
+            if folder == "dissolve:" { showRenameFolder(app.name, isDissolving: true); return }
+            guard folder.hasPrefix("rename:") else { return }
             let oldName = app.name
             if folder == "rename:" { showRenameFolder(oldName); return }
             let newName = String(folder.dropFirst("rename:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3871,13 +3895,50 @@ private enum AppSortOrder: Int {
             }
             for record in apps where layout.folders[record.path] == oldName || record.folder == oldName {
                 layout.folders[record.path] = newName
+                layout.ungroupedPaths.remove(record.path)
             }
         } else if let folder {
             layout.folders[app.path] = folder
+            layout.ungroupedPaths.remove(app.path)
         } else {
-            layout.folders[app.path] = ""
+            layout.folders.removeValue(forKey: app.path)
+            if AppScanner.isInsideApplicationDirectory(path: app.path) {
+                layout.ungroupedPaths.insert(app.path)
+            } else {
+                layout.ungroupedPaths.remove(app.path)
+                if let index = apps.firstIndex(where: { $0.path == app.path }) {
+                    apps[index].folder = nil
+                }
+            }
         }
         persistLayoutAndRefresh()
+    }
+
+    private func dissolveFolder(_ name: String) {
+        let members = apps.filter { $0.folder == name }
+        guard !members.isEmpty else { return }
+        let previousLayout = layout
+        for app in members {
+            layout.folders.removeValue(forKey: app.path)
+            if AppScanner.isInsideApplicationDirectory(path: app.path) {
+                layout.ungroupedPaths.insert(app.path)
+            } else {
+                layout.ungroupedPaths.remove(app.path)
+            }
+        }
+        do {
+            try LayoutStore.save(layout)
+        } catch {
+            layout = previousLayout
+            logger.error("Could not dissolve folder: \(error.localizedDescription, privacy: .public)")
+            NSSound.beep()
+            return
+        }
+        let memberPaths = Set(members.map(\.path))
+        for index in apps.indices where memberPaths.contains(apps[index].path) {
+            apps[index].folder = nil
+        }
+        filter(query: searchCapsule.stringValue, targetPage: pagedContainer.currentPage)
     }
 
     private func filterFolder(query: String) {

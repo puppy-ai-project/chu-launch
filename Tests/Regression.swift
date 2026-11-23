@@ -51,6 +51,21 @@ import Foundation
         let decodedLegacy = LayoutStore.load(from: layoutURL)
         precondition(decodedLegacy.paths == ["/Applications/A.app", "/Applications/B.app"] && decodedLegacy.folders.isEmpty, "legacy layout without folders decodes cleanly")
 
+        let oldFolderJSON = #"{"version":1,"folders":{"/Applications/A.app":"","/Applications/Utilities/B.app":"","/Applications/C.app":"Group"}}"#
+        try Data(oldFolderJSON.utf8).write(to: layoutURL)
+        var migrated = LayoutStore.load(from: layoutURL)
+        let scanned = [AppRecord(path: "/Applications/A.app", name: "A"), AppRecord(path: "/Applications/Utilities/B.app", name: "B", folder: "Utilities"), AppRecord(path: "/Applications/C.app", name: "C")]
+        let migratedApps = migrated.reconcile(scanned)
+        precondition(migrated.folders == ["/Applications/C.app": "Group"])
+        precondition(migrated.ungroupedPaths == ["/Applications/Utilities/B.app"])
+        precondition(migratedApps[1].folder == nil && migratedApps[2].folder == "Group")
+        try LayoutStore.save(migrated, to: layoutURL)
+        var restored = LayoutStore.load(from: layoutURL)
+        precondition(restored.reconcile(scanned)[1].folder == nil, "ungrouped system app stays on the main page after reload")
+        let destination = AppRecord(path: "chu-folder:Group", name: "Group")
+        restored.merge(draggedApp: scanned[1], onto: destination, allApps: scanned)
+        precondition(!restored.ungroupedPaths.contains(scanned[1].path), "regrouping removes the exception")
+
         // 验证拖动应用合并创建目录、加入已有目录及卸载清理
         var folderLayout = Layout()
         let appA = AppRecord(path: "/Applications/A.app", name: "App A")
