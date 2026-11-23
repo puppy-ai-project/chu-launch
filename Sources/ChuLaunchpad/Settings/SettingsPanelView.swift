@@ -164,7 +164,7 @@ enum SettingsTab {
 }
 
 // MARK: - 交互式圆角按钮 (悬停 / 按压 / 加载态)
-@MainActor private final class SettingsActionButton: NSControl {
+@MainActor final class SettingsActionButton: NSControl {
     enum Style {
         case primary
         case secondary

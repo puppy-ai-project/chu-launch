@@ -499,52 +499,304 @@ enum AnimationHelper {
     }
 }
 
-@MainActor final class FolderRenameView: NSView {
+@MainActor final class FolderRenameView: NSView, NSTextFieldDelegate {
     let field: NSTextField
     var onFinish: ((String?) -> Void)?
-    private let card = NSView()
 
-    init(frame: NSRect, name: String, icon: NSImage) {
-        field = NSTextField(string: name)
+    private let originalName: String
+    private let existingNames: Set<String>
+    private let cardWrapper = NSView()
+    private let cardShell = NSView()
+    private let glassView = NSVisualEffectView()
+    private let surfaceTintView = NSView()
+    private let borderOverlay = NSView()
+    private let titleLabel = NSTextField(labelWithString: "重命名分组")
+    private let subtitleLabel = NSTextField(labelWithString: "")
+    private let fieldContainer = NSView()
+    private let clearButton = NSButton()
+    private let errorLabel = NSTextField(labelWithString: "")
+    private let cancelButton: SettingsActionButton
+    private let confirmButton: SettingsActionButton
+    private var isClosing = false
+
+    private static let cardWidth: CGFloat = 380
+    private static let cardHeight: CGFloat = 272
+
+    init(frame: NSRect, name: String, icon: NSImage, existingNames: Set<String> = []) {
+        self.originalName = name
+        self.existingNames = existingNames
+        self.field = NSTextField(string: name)
+        self.cancelButton = SettingsActionButton(frame: NSRect(x: 24, y: 220, width: 160, height: 34), style: .secondary, title: "取消")
+        self.confirmButton = SettingsActionButton(frame: NSRect(x: 196, y: 220, width: 160, height: 34), style: .primary, title: "完成")
         super.init(frame: frame)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
-        card.wantsLayer = true
-        card.layer?.backgroundColor = NSColor(white: 0.18, alpha: 0.96).cgColor
-        card.layer?.cornerRadius = 20
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
-        addSubview(card)
-        let image = NSImageView(frame: NSRect(x: 24, y: 146, width: 72, height: 72))
-        image.image = icon
-        image.imageScaling = .scaleProportionallyUpOrDown
-        card.addSubview(image)
-        let label = NSTextField(labelWithString: "重命名分组")
-        label.frame = NSRect(x: 24, y: 115, width: 300, height: 24)
-        label.font = .systemFont(ofSize: 16, weight: .semibold)
-        label.textColor = .white
-        card.addSubview(label)
-        field.frame = NSRect(x: 24, y: 72, width: 312, height: 28)
-        field.font = .systemFont(ofSize: 15)
-        card.addSubview(field)
-        let cancelButton = NSButton(title: "取消", target: self, action: #selector(cancel))
-        cancelButton.frame = NSRect(x: 24, y: 20, width: 148, height: 32)
-        card.addSubview(cancelButton)
-        let confirmButton = NSButton(title: "完成", target: self, action: #selector(confirm))
-        confirmButton.bezelColor = .systemBlue
-        confirmButton.frame = NSRect(x: 188, y: 20, width: 148, height: 32)
-        card.addSubview(confirmButton)
+        setupHierarchy(name: name, icon: icon)
+        applyTheme()
+        validateInput()
     }
 
     required init?(coder: NSCoder) { nil }
 
-    override func layout() {
-        super.layout()
-        card.frame = NSRect(x: (bounds.width - 360) / 2, y: (bounds.height - 240) / 2, width: 360, height: 240)
+    override var isFlipped: Bool { true }
+
+    private func setupHierarchy(name: String, icon: NSImage) {
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.24).cgColor
+
+        // 投影外框（不裁剪阴影）
+        cardWrapper.wantsLayer = true
+        cardWrapper.layer?.shadowColor = NSColor.black.cgColor
+        cardWrapper.layer?.shadowOpacity = 0.44
+        cardWrapper.layer?.shadowRadius = 26
+        cardWrapper.layer?.shadowOffset = CGSize(width: 0, height: -10)
+        addSubview(cardWrapper)
+
+        // 圆角裁剪主壳（Flipped 坐标系）
+        final class FlippedCard: NSView { override var isFlipped: Bool { true } }
+        let flippedShell = FlippedCard(frame: NSRect(x: 0, y: 0, width: Self.cardWidth, height: Self.cardHeight))
+        flippedShell.wantsLayer = true
+        flippedShell.layer?.cornerRadius = 18
+        flippedShell.layer?.masksToBounds = true
+        cardWrapper.addSubview(flippedShell)
+
+        cardShell.frame = flippedShell.bounds
+        cardShell.autoresizingMask = [.width, .height]
+        flippedShell.addSubview(cardShell)
+
+        glassView.frame = flippedShell.bounds
+        glassView.autoresizingMask = [.width, .height]
+        glassView.blendingMode = .withinWindow
+        glassView.state = .active
+        flippedShell.addSubview(glassView)
+
+        surfaceTintView.frame = flippedShell.bounds
+        surfaceTintView.autoresizingMask = [.width, .height]
+        surfaceTintView.wantsLayer = true
+        flippedShell.addSubview(surfaceTintView)
+
+        // 分组缩略图居中 + 环境阴影
+        let iconHolder = NSView(frame: NSRect(x: floor((Self.cardWidth - 68) / 2), y: 22, width: 68, height: 68))
+        iconHolder.wantsLayer = true
+        iconHolder.layer?.shadowColor = NSColor.black.cgColor
+        iconHolder.layer?.shadowOpacity = 0.28
+        iconHolder.layer?.shadowRadius = 10
+        iconHolder.layer?.shadowOffset = CGSize(width: 0, height: -4)
+        let imageView = NSImageView(frame: iconHolder.bounds)
+        imageView.image = icon
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        iconHolder.addSubview(imageView)
+        flippedShell.addSubview(iconHolder)
+
+        // 居中标题与副标题
+        titleLabel.font = .systemFont(ofSize: 16.5, weight: .bold)
+        titleLabel.textColor = .labelColor
+        titleLabel.alignment = .center
+        titleLabel.frame = NSRect(x: 24, y: 98, width: Self.cardWidth - 48, height: 22)
+        flippedShell.addSubview(titleLabel)
+
+        subtitleLabel.stringValue = "输入新的分组名称，按回车确认"
+        subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.alignment = .center
+        subtitleLabel.frame = NSRect(x: 24, y: 122, width: Self.cardWidth - 48, height: 18)
+        flippedShell.addSubview(subtitleLabel)
+
+        // 定制圆角输入容器
+        fieldContainer.frame = NSRect(x: 24, y: 152, width: Self.cardWidth - 48, height: 38)
+        fieldContainer.wantsLayer = true
+        fieldContainer.layer?.cornerRadius = 10
+        fieldContainer.layer?.borderWidth = 1.5
+        flippedShell.addSubview(fieldContainer)
+
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: 14, weight: .medium)
+        field.textColor = .labelColor
+        field.alignment = .left
+        field.maximumNumberOfLines = 1
+        field.lineBreakMode = .byTruncatingTail
+        field.delegate = self
+        let fieldHeight: CGFloat = 20
+        field.frame = NSRect(x: 12, y: floor((38 - fieldHeight) / 2), width: Self.cardWidth - 48 - 44, height: fieldHeight)
+        fieldContainer.addSubview(field)
+
+        // 右侧清空按钮
+        clearButton.isBordered = false
+        clearButton.title = ""
+        let clearConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
+        clearButton.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "清空名称")?.withSymbolConfiguration(clearConfig)
+        clearButton.contentTintColor = .tertiaryLabelColor
+        clearButton.target = self
+        clearButton.action = #selector(clearText)
+        clearButton.frame = NSRect(x: fieldContainer.bounds.width - 28, y: 9, width: 20, height: 20)
+        clearButton.isHidden = name.isEmpty
+        fieldContainer.addSubview(clearButton)
+
+        // 重名提示
+        errorLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
+        errorLabel.textColor = .systemOrange
+        errorLabel.alignment = .left
+        errorLabel.frame = NSRect(x: 26, y: 195, width: Self.cardWidth - 52, height: 16)
+        errorLabel.isHidden = true
+        flippedShell.addSubview(errorLabel)
+
+        // 底部双按钮
+        cancelButton.onTap = { [weak self] in self?.cancel() }
+        confirmButton.onTap = { [weak self] in self?.confirm() }
+        flippedShell.addSubview(cancelButton)
+        flippedShell.addSubview(confirmButton)
+
+        // 玻璃外描边（不拦截事件）
+        final class PassBorder: NSView { override func hitTest(_ point: NSPoint) -> NSView? { nil } }
+        let passBorder = PassBorder(frame: flippedShell.bounds)
+        passBorder.autoresizingMask = [.width, .height]
+        passBorder.addSubview(borderOverlay)
+        borderOverlay.frame = passBorder.bounds
+        borderOverlay.autoresizingMask = [.width, .height]
+        borderOverlay.wantsLayer = true
+        borderOverlay.layer?.cornerRadius = 18
+        borderOverlay.layer?.borderWidth = 1
+        flippedShell.addSubview(passBorder)
     }
 
-    @objc func cancel() { onFinish?(nil) }
-    @objc func confirm() { onFinish?(field.stringValue) }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyTheme()
+    }
+
+    private func applyTheme() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        glassView.material = isDark ? .hudWindow : .popover
+        surfaceTintView.layer?.backgroundColor = (isDark
+            ? NSColor(srgbRed: 0.11, green: 0.12, blue: 0.14, alpha: 0.66)
+            : NSColor(srgbRed: 0.97, green: 0.97, blue: 0.98, alpha: 0.76)).cgColor
+
+        fieldContainer.layer?.backgroundColor = (isDark
+            ? NSColor.black.withAlphaComponent(0.28)
+            : NSColor.white.withAlphaComponent(0.86)).cgColor
+        fieldContainer.layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(isDark ? 0.85 : 0.75).cgColor
+
+        borderOverlay.layer?.borderColor = (isDark
+            ? NSColor.white.withAlphaComponent(0.18)
+            : NSColor.black.withAlphaComponent(0.11)).cgColor
+
+        cardWrapper.layer?.shadowOpacity = isDark ? 0.48 : 0.24
+        cancelButton.updateAppearanceColors()
+        confirmButton.updateAppearanceColors()
+    }
+
+    override func layout() {
+        super.layout()
+        let x = floor((bounds.width - Self.cardWidth) / 2)
+        let y = floor((bounds.height - Self.cardHeight) / 2)
+        cardWrapper.frame = NSRect(x: x, y: y, width: Self.cardWidth, height: Self.cardHeight)
+        cardWrapper.layer?.shadowPath = CGPath(roundedRect: cardWrapper.bounds, cornerWidth: 18, cornerHeight: 18, transform: nil)
+    }
+
+    func present() {
+        layoutSubtreeIfNeeded()
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            alphaValue = 1
+            return
+        }
+        alphaValue = 0
+        if let layer = cardWrapper.layer {
+            let center = CGPoint(x: cardWrapper.bounds.midX, y: cardWrapper.bounds.midY)
+            let anim = CABasicAnimation(keyPath: "transform")
+            anim.fromValue = NSValue(caTransform3D: AnimationHelper.makeScaleTransform(scale: 0.94, center: center))
+            anim.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+            anim.duration = 0.20
+            anim.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+            layer.add(anim, forKey: "renamePresentScale")
+        }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            animator().alphaValue = 1
+        }
+    }
+
+    private func dismiss(result: String?) {
+        guard !isClosing else { return }
+        isClosing = true
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            onFinish?(result)
+            return
+        }
+        if let layer = cardWrapper.layer {
+            let center = CGPoint(x: cardWrapper.bounds.midX, y: cardWrapper.bounds.midY)
+            let anim = CABasicAnimation(keyPath: "transform")
+            anim.fromValue = NSValue(caTransform3D: CATransform3DIdentity)
+            anim.toValue = NSValue(caTransform3D: AnimationHelper.makeScaleTransform(scale: 0.96, center: center))
+            anim.duration = 0.14
+            anim.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            anim.fillMode = .forwards
+            anim.isRemovedOnCompletion = false
+            layer.add(anim, forKey: "renameDismissScale")
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.14
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            Task { @MainActor in
+                self?.onFinish?(result)
+            }
+        })
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        validateInput()
+    }
+
+    private func validateInput() {
+        let raw = field.stringValue
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        clearButton.isHidden = raw.isEmpty
+
+        if trimmed.isEmpty {
+            errorLabel.isHidden = true
+            confirmButton.isEnabled = false
+        } else if trimmed != originalName && existingNames.contains(trimmed) {
+            errorLabel.stringValue = "已存在名为“\(trimmed)”的分组"
+            errorLabel.isHidden = false
+            confirmButton.isEnabled = false
+        } else {
+            errorLabel.isHidden = true
+            confirmButton.isEnabled = true
+        }
+    }
+
+    @objc private func clearText() {
+        field.stringValue = ""
+        validateInput()
+        window?.makeFirstResponder(field)
+    }
+
+    // 拦截点击背景遮罩退出，并阻止事件穿透到底层网格
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) ?? (frame.contains(point) ? self : nil)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        if !cardWrapper.frame.contains(local) {
+            cancel()
+        }
+    }
+    override func rightMouseDown(with event: NSEvent) {}
+    override func otherMouseDown(with event: NSEvent) {}
+    override func scrollWheel(with event: NSEvent) {}
+
+    @objc func cancel() { dismiss(result: nil) }
+    @objc func confirm() {
+        let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !(trimmed != originalName && existingNames.contains(trimmed)) else {
+            NSSound.beep()
+            return
+        }
+        dismiss(result: trimmed)
+    }
 }
 
 // MARK: - 单个应用图标项 (App Item View)
@@ -3575,18 +3827,24 @@ private enum AppSortOrder: Int {
     private func showRenameFolder(_ name: String) {
         guard renamePanel == nil else { return }
         let icon = PageGridView.folderIcon(apps: apps.filter { $0.folder == name }, iconCache: iconCache)
-        let panel = FolderRenameView(frame: backgroundView.bounds, name: name, icon: icon)
+        let existingNames = Set(apps.compactMap(\.folder))
+        let panel = FolderRenameView(frame: backgroundView.bounds, name: name, icon: icon, existingNames: existingNames)
         panel.autoresizingMask = [.width, .height]
         panel.onFinish = { [weak self, weak panel] newName in
             guard let self else { return }
             panel?.removeFromSuperview()
             self.renamePanel = nil
+            if self.settingsPanel == nil {
+                self.menuSettingsShade?.isHidden = true
+            }
             if let newName {
                 self.move(AppRecord(path: "chu-folder:" + name, name: name), to: "rename:" + newName)
             }
         }
+        menuSettingsShade?.isHidden = false
         backgroundView.addSubview(panel, positioned: .above, relativeTo: folderBackdrop)
         renamePanel = panel
+        panel.present()
         window.makeFirstResponder(panel.field)
         panel.field.currentEditor()?.selectAll(nil)
     }
