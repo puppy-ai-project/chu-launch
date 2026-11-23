@@ -57,12 +57,70 @@ enum AppScanner {
 struct Layout: Codable, Sendable {
     var version = 1
     var paths: [String] = []
+    /// 自定义目录归属映射：app.path -> 目录名称
+    var folders: [String: String] = [:]
+
+    enum CodingKeys: String, CodingKey {
+        case version, paths, folders
+    }
+
+    init(version: Int = 1, paths: [String] = [], folders: [String: String] = [:]) {
+        self.version = version
+        self.paths = paths
+        self.folders = folders
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        paths = try container.decodeIfPresent([String].self, forKey: .paths) ?? []
+        folders = try container.decodeIfPresent([String: String].self, forKey: .folders) ?? [:]
+    }
 
     mutating func reconcile(_ apps: [AppRecord]) -> [AppRecord] {
         var seen = Set<String>()
-        let ordered = apps.filter { seen.insert($0.path).inserted }
-        paths = ordered.map(\.path)
+        let unique = apps.filter { seen.insert($0.path).inserted }
+        let byPath = Dictionary(uniqueKeysWithValues: unique.map { ($0.path, $0) })
+        let preservedPaths = paths.filter { byPath[$0] != nil }
+        let preservedSet = Set(preservedPaths)
+        let newPaths = unique.map(\.path).filter { !preservedSet.contains($0) }
+        paths = preservedPaths + newPaths
+        var ordered = paths.compactMap { byPath[$0] }
+        folders = folders.filter { seen.contains($0.key) && !$0.value.isEmpty }
+        for index in ordered.indices {
+            ordered[index].folder = folders[ordered[index].path]
+        }
         return ordered
+    }
+
+    /// 生成不与现有目录名冲突的新目录名称
+    static func nextAvailableFolderName(existingNames: Set<String>, baseName: String = "新建文件夹") -> String {
+        if !existingNames.contains(baseName) { return baseName }
+        var suffix = 2
+        while existingNames.contains("\(baseName) \(suffix)") {
+            suffix += 1
+        }
+        return "\(baseName) \(suffix)"
+    }
+
+    /// 将拖拽应用合并到目标应用或已有目录中；返回最终使用的目录名
+    @discardableResult
+    mutating func merge(draggedApp: AppRecord, onto targetApp: AppRecord, allApps: [AppRecord]) -> String {
+        let folderName: String
+        if targetApp.path.hasPrefix("chu-folder:") {
+            folderName = targetApp.name
+        } else if let existingTargetFolder = folders[targetApp.path] ?? targetApp.folder {
+            folderName = existingTargetFolder
+        } else {
+            var existingNames = Set(folders.values)
+            for app in allApps {
+                if let folder = app.folder { existingNames.insert(folder) }
+            }
+            folderName = Self.nextAvailableFolderName(existingNames: existingNames)
+            folders[targetApp.path] = folderName
+        }
+        folders[draggedApp.path] = folderName
+        return folderName
     }
 }
 

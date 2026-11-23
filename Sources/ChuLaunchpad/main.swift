@@ -506,10 +506,20 @@ enum AnimationHelper {
         let frame = iconImageView.frame
         return frame.insetBy(dx: frame.width * 12 / 128, dy: frame.height * 12 / 128)
     }
+    var currentIconImage: NSImage? { iconImageView.image }
+    var iconFrameInSelf: NSRect { iconImageView.frame }
+    var dropTargetRectInSelf: NSRect {
+        iconImageView.frame.union(nameLabel.frame).insetBy(dx: -14, dy: -10)
+    }
+    private let mergePreviewBox = NSView()
     private let nameLabel = NSTextField(labelWithString: "")
     private(set) var appRecord: AppRecord?
     private var onOpen: ((AppRecord, AppItemView) -> Void)?
+    private var onCreateFolder: ((AppRecord) -> Void)?
+    private var onMoveToFolder: ((AppRecord, String?) -> Void)?
+    private var availableFolders: [String] = []
     private var isPressed = false
+    private var isMergeHighlighted = false
 
     override var isFlipped: Bool { true }
 
@@ -525,6 +535,15 @@ enum AnimationHelper {
 
     private func setupView() {
         wantsLayer = true
+
+        mergePreviewBox.wantsLayer = true
+        mergePreviewBox.layer?.cornerRadius = 22
+        mergePreviewBox.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        mergePreviewBox.layer?.borderWidth = 1.2
+        mergePreviewBox.layer?.borderColor = NSColor.white.withAlphaComponent(0.36).cgColor
+        mergePreviewBox.alphaValue = 0
+        mergePreviewBox.isHidden = true
+        addSubview(mergePreviewBox)
 
         iconImageView.imageScaling = .scaleProportionallyUpOrDown
         iconImageView.wantsLayer = true
@@ -558,6 +577,8 @@ enum AnimationHelper {
         let iconX = floor((bounds.width - iconSize) / 2)
 
         iconImageView.frame = NSRect(x: iconX, y: startY, width: iconSize, height: iconSize)
+        mergePreviewBox.frame = iconImageView.frame.insetBy(dx: -6, dy: -6)
+        mergePreviewBox.layer?.cornerRadius = max(16, (iconSize + 12) * 0.24)
         nameLabel.frame = NSRect(x: 4, y: startY + iconSize + spacing, width: bounds.width - 8, height: labelHeight)
     }
 
@@ -573,6 +594,44 @@ enum AnimationHelper {
         return NSRect(x: x, y: top, width: width, height: max(1, bottom - top))
     }
 
+    func setDragSourceHidden(_ hidden: Bool) {
+        alphaValue = hidden ? 0 : 1
+    }
+
+    func setMergeHighlighted(_ highlighted: Bool) {
+        guard isMergeHighlighted != highlighted else { return }
+        isMergeHighlighted = highlighted
+        if highlighted { mergePreviewBox.isHidden = false }
+
+        let center = CGPoint(x: iconImageView.bounds.midX, y: iconImageView.bounds.midY)
+        let targetScale: CGFloat = highlighted ? 0.86 : 1.0
+        let targetTransform = highlighted ? AnimationHelper.makeScaleTransform(scale: targetScale, center: center) : CATransform3DIdentity
+
+        let boxCenter = CGPoint(x: mergePreviewBox.bounds.midX, y: mergePreviewBox.bounds.midY)
+        let boxScale: CGFloat = highlighted ? 1.08 : 0.92
+        let boxTransform = AnimationHelper.makeScaleTransform(scale: boxScale, center: boxCenter)
+
+        let duration: CFTimeInterval = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.14
+        let curve = CAMediaTimingFunction(name: .easeOut)
+        if let iconLayer = iconImageView.layer {
+            LauncherTransition.set(iconLayer, keyPath: "transform", value: NSValue(caTransform3D: targetTransform), duration: duration, curve: curve)
+        }
+        if let boxLayer = mergePreviewBox.layer {
+            LauncherTransition.set(boxLayer, keyPath: "transform", value: NSValue(caTransform3D: boxTransform), duration: duration, curve: curve)
+        }
+
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = duration
+            context.timingFunction = curve
+            mergePreviewBox.animator().alphaValue = highlighted ? 1 : 0
+        }, completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.isMergeHighlighted else { return }
+                self.mergePreviewBox.isHidden = true
+            }
+        })
+    }
+
     func configure(app: AppRecord, icon: NSImage, onOpen: @escaping (AppRecord, AppItemView) -> Void) {
         self.appRecord = app
         self.onOpen = onOpen
@@ -580,9 +639,39 @@ enum AnimationHelper {
         iconImageView.image = icon
     }
 
+    func configureFolderActions(names: [String], onCreate: @escaping (AppRecord) -> Void, onMove: @escaping (AppRecord, String?) -> Void) {
+        availableFolders = names
+        onCreateFolder = onCreate
+        onMoveToFolder = onMove
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard let appRecord, !appRecord.path.hasPrefix("chu-folder:") else { return nil }
+        guard let appRecord else { return nil }
         let menu = NSMenu()
+        if !appRecord.path.hasPrefix("chu-folder:") {
+            let create = menu.addItem(withTitle: "新建分组", action: #selector(createFolderFromMenu), keyEquivalent: "")
+            create.target = self
+            MenuSymbols.apply("folder.badge.plus", to: create)
+
+            let move = menu.addItem(withTitle: "移至分组", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            let ungroup = submenu.addItem(withTitle: "无分组", action: #selector(moveToUngrouped), keyEquivalent: "")
+            ungroup.target = self
+            if appRecord.folder == nil { ungroup.state = .on }
+            for name in availableFolders {
+                let item = submenu.addItem(withTitle: name, action: #selector(moveToNamedFolder(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = name
+                if appRecord.folder == name { item.state = .on }
+            }
+            move.submenu = submenu
+            menu.addItem(.separator())
+        } else {
+            let rename = menu.addItem(withTitle: "重命名分组", action: #selector(renameFolderFromMenu), keyEquivalent: "")
+            rename.target = self
+            MenuSymbols.apply("pencil", to: rename)
+            menu.addItem(.separator())
+        }
         for (title, action, symbol) in [
             ("打开", #selector(openFromMenu), "macwindow"),
             ("在访达中显示", #selector(revealFromMenu), "folder"),
@@ -595,6 +684,25 @@ enum AnimationHelper {
             MenuSymbols.apply(symbol, to: item)
         }
         return menu
+    }
+
+    @objc private func createFolderFromMenu() { if let appRecord { onCreateFolder?(appRecord) } }
+    @objc private func moveToUngrouped() { if let appRecord { onMoveToFolder?(appRecord, nil) } }
+    @objc private func moveToNamedFolder(_ sender: NSMenuItem) {
+        if let appRecord, let name = sender.representedObject as? String { onMoveToFolder?(appRecord, name) }
+    }
+    @objc private func renameFolderFromMenu() {
+        guard let appRecord, appRecord.path.hasPrefix("chu-folder:") else { return }
+        let alert = NSAlert()
+        alert.messageText = "重命名分组"
+        alert.addButton(withTitle: "完成")
+        alert.addButton(withTitle: "取消")
+        let field = NSTextField(string: appRecord.name)
+        field.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { onMoveToFolder?(appRecord, "rename:\(name)") }
     }
 
     @objc private func openFromMenu() {
@@ -657,6 +765,11 @@ enum AnimationHelper {
         guard isPressed else { return }
         isPressed = false
         animatePress(down: false)
+    }
+
+    func consumeMouseUpAfterDrag() {
+        isPressed = false
+        iconImageView.alphaValue = 1
     }
 
     private func animatePress(down: Bool) {
@@ -791,7 +904,7 @@ enum AnimationHelper {
         hoverTrackingArea = area
     }
 
-    func populate(apps: [AppRecord], folders: [String: [AppRecord]], iconCache: NSCache<NSString, NSImage>, onOpen: @escaping (AppRecord, AppItemView) -> Void) {
+    func populate(apps: [AppRecord], folders: [String: [AppRecord]], iconCache: NSCache<NSString, NSImage>, onOpen: @escaping (AppRecord, AppItemView) -> Void, onCreateFolder: @escaping (AppRecord) -> Void = { _ in }, onMoveToFolder: @escaping (AppRecord, String?) -> Void = { _, _ in }) {
         for sub in itemViews { sub.removeFromSuperview() }
         itemViews.removeAll()
         hoveredItem = nil
@@ -820,6 +933,8 @@ enum AnimationHelper {
             }
             let itemView = AppItemView()
             itemView.configure(app: app, icon: icon, onOpen: onOpen)
+            let names = folders.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            itemView.configureFolderActions(names: names, onCreate: onCreateFolder, onMove: onMoveToFolder)
             addSubview(itemView)
             itemViews.append(itemView)
         }
@@ -1157,6 +1272,8 @@ enum AnimationHelper {
     var onPageChanged: ((Int) -> Void)?
     var onScrollProgressChanged: ((CGFloat) -> Void)?
     var onOpenApp: ((AppRecord, AppItemView) -> Void)?
+    var onCreateFolder: ((AppRecord) -> Void)?
+    var onMoveToFolder: ((AppRecord, String?) -> Void)?
     var onBlankAreaClicked: (() -> Void)?
 
     // 交互式滑动手势状态
@@ -1188,7 +1305,7 @@ enum AnimationHelper {
         addSubview(pagesTrackView)
     }
 
-    func reloadPages(apps: [AppRecord], folders: [String: [AppRecord]], iconCache: NSCache<NSString, NSImage>, targetPage: Int = 0) {
+    func reloadPages(apps: [AppRecord], folders: [String: [AppRecord]], iconCache: NSCache<NSString, NSImage>, targetPage: Int = 0, onCreateFolder: @escaping (AppRecord) -> Void = { _ in }, onMoveToFolder: @escaping (AppRecord, String?) -> Void = { _, _ in }) {
         let pageSize = self.pageSize
         let count = max(1, (apps.count + pageSize - 1) / pageSize)
         self.pageCount = count
@@ -1210,9 +1327,9 @@ enum AnimationHelper {
             let pageView = PageGridView(frame: NSRect(x: CGFloat(p) * screenWidth, y: 0, width: screenWidth, height: containerHeight))
             pageView.columns = columns
             pageView.rows = rows
-            pageView.populate(apps: pageApps, folders: folders, iconCache: iconCache) { [weak self] app, itemView in
+            pageView.populate(apps: pageApps, folders: folders, iconCache: iconCache, onOpen: { [weak self] app, itemView in
                 self?.onOpenApp?(app, itemView)
-            }
+            }, onCreateFolder: onCreateFolder, onMoveToFolder: onMoveToFolder)
             pageView.onBlankDragStart = { [weak self] event in self?.beginMouseDrag(event) }
             pageView.onBlankDragMove = { [weak self] event in self?.moveMouseDrag(event) }
             pageView.onBlankDragEnd = { [weak self] event in self?.endMouseDrag(event) }
@@ -1294,6 +1411,31 @@ enum AnimationHelper {
             }
         }
         return nil
+    }
+
+    /// 命中当前页上可合并为目录的目标应用/目录视图（同时检测指针位置与拖拽图标中心）
+    func hitTestDropTarget(atWindowPoints points: [NSPoint], excludingPath: String) -> AppItemView? {
+        guard pageViews.indices.contains(currentPage), let referencePoint = points.first else { return nil }
+        var bestMatch: AppItemView?
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+        for itemView in pageViews[currentPage].items {
+            guard let record = itemView.appRecord, record.path != excludingPath else { continue }
+            itemView.layoutSubtreeIfNeeded()
+            let iconFrame = itemView.iconFrameInSelf
+            let hitRect = iconFrame.insetBy(dx: -iconFrame.width * 0.08, dy: -iconFrame.height * 0.08)
+            let matched = points.contains { pt in
+                hitRect.contains(itemView.convert(pt, from: nil))
+            }
+            if matched {
+                let localRef = itemView.convert(referencePoint, from: nil)
+                let dist = hypot(localRef.x - itemView.iconFrameInSelf.midX, localRef.y - itemView.iconFrameInSelf.midY)
+                if dist < bestDistance {
+                    bestDistance = dist
+                    bestMatch = itemView
+                }
+            }
+        }
+        return bestMatch
     }
 
     override func layout() {
@@ -2045,6 +2187,14 @@ private enum AppSortOrder: Int {
     private var pointerDragging = false
     private var pointerIsBlank = false
     private weak var pointerItem: AppItemView?
+    private var appDragMonitor: Any?
+    private weak var draggingItemView: AppItemView?
+    private var draggingApp: AppRecord?
+    private var dragFloatingView: NSImageView?
+    private var dragPointerOffset: NSPoint = .zero
+    private weak var dropTargetItemView: AppItemView?
+    private var edgePageTimer: Timer?
+    private var edgePageDirection = 0
     private weak var launchingItem: AppItemView?
     private var isLaunching = false
     private var launcherTargetVisible = false
@@ -2609,7 +2759,14 @@ private enum AppSortOrder: Int {
             }
         }
         NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
-            guard let self, event.window === self.window, self.window.isVisible, self.settingsPanel == nil, !self.isLaunching else { return event }
+            guard let self else { return event }
+            if event.type == .leftMouseUp, self.draggingApp != nil {
+                self.pointerDown = nil
+                self.pointerDragging = false
+                self.endAppDrag(event: event)
+                return nil
+            }
+            guard event.window === self.window, self.window.isVisible, self.settingsPanel == nil, !self.isLaunching else { return event }
             switch event.type {
             case .leftMouseDown:
                 self.pointerDown = event
@@ -2632,11 +2789,33 @@ private enum AppSortOrder: Int {
                 if !self.pointerDragging && hypot(dx, dy) >= 6 {
                     self.pointerDragging = true
                     self.pointerItem?.cancelPress()
-                    self.activePages.beginMouseDrag(down)
+                    if let item = self.pointerItem,
+                       let app = item.appRecord,
+                       self.openFolder == nil,
+                       self.searchCapsule.stringValue.isEmpty,
+                       !app.path.hasPrefix("chu-folder:") {
+                        self.beginAppDrag(item: item, app: app, downEvent: down, currentEvent: event)
+                    } else {
+                        self.activePages.beginMouseDrag(down)
+                    }
                 }
-                if self.pointerDragging { self.activePages.moveMouseDrag(event); return nil }
+                if self.pointerDragging {
+                    if self.draggingApp != nil {
+                        self.updateAppDrag(event: event)
+                    } else {
+                        self.activePages.moveMouseDrag(event)
+                    }
+                    return nil
+                }
                 return event
             case .leftMouseUp:
+                if self.draggingApp != nil {
+                    self.pointerDown = nil
+                    self.pointerDragging = false
+                    self.pointerItem?.consumeMouseUpAfterDrag()
+                    self.endAppDrag(event: event)
+                    return nil
+                }
                 guard self.pointerDown != nil else { return event }
                 self.pointerDown = nil
                 if self.pointerDragging {
@@ -2740,6 +2919,201 @@ private enum AppSortOrder: Int {
         }
     }
 
+    // MARK: - 应用拖拽合并目录 (Drag-to-Folder & Edge Auto-Paging)
+    private func beginAppDrag(item: AppItemView, app: AppRecord, downEvent: NSEvent, currentEvent: NSEvent) {
+        cancelAppDrag()
+        draggingItemView = item
+        draggingApp = app
+
+        let downPointInBg = backgroundView.convert(downEvent.locationInWindow, from: nil)
+        let iconFrameInBg = item.convert(item.iconFrameInSelf, to: backgroundView)
+        dragPointerOffset = NSPoint(x: downPointInBg.x - iconFrameInBg.midX, y: downPointInBg.y - iconFrameInBg.midY)
+
+        let floating = NSImageView(frame: iconFrameInBg)
+        floating.image = item.currentIconImage
+        floating.imageScaling = .scaleProportionallyUpOrDown
+        floating.wantsLayer = true
+        floating.layer?.shadowColor = NSColor.black.cgColor
+        floating.layer?.shadowOpacity = 0.38
+        floating.layer?.shadowRadius = 12
+        floating.layer?.shadowOffset = CGSize(width: 0, height: -4)
+
+        backgroundView.addSubview(floating, positioned: .below, relativeTo: folderBackdrop)
+        if let layer = floating.layer {
+            let center = CGPoint(x: floating.bounds.midX, y: floating.bounds.midY)
+            let scale = AnimationHelper.makeScaleTransform(scale: 1.08, center: center)
+            LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: scale), duration: 0.12, curve: CAMediaTimingFunction(name: .easeOut))
+        }
+        dragFloatingView = floating
+        item.setDragSourceHidden(true)
+
+        updateAppDrag(event: currentEvent)
+    }
+
+    private func currentDropCandidate(windowPoint: NSPoint, draggedPath: String) -> AppItemView? {
+        var points: [NSPoint] = []
+        if let floating = dragFloatingView {
+            let centerInBg = NSPoint(x: floating.frame.midX, y: floating.frame.midY)
+            let centerInWindow = backgroundView.convert(centerInBg, to: nil)
+            points.append(centerInWindow)
+        }
+        points.append(windowPoint)
+        return pagedContainer.hitTestDropTarget(atWindowPoints: points, excludingPath: draggedPath)
+    }
+
+    private func updateAppDrag(event: NSEvent) {
+        guard let floating = dragFloatingView, let dragged = draggingApp else { return }
+        let pointInBg = backgroundView.convert(event.locationInWindow, from: nil)
+        let newOrigin = NSPoint(
+            x: pointInBg.x - dragPointerOffset.x - floating.bounds.width / 2,
+            y: pointInBg.y - dragPointerOffset.y - floating.bounds.height / 2
+        )
+        floating.setFrameOrigin(newOrigin)
+
+        // 边缘自动翻页检测
+        let edgeMargin: CGFloat = 56
+        if pointInBg.x <= edgeMargin && pagedContainer.currentPage > 0 {
+            scheduleEdgePageTurn(direction: -1, event: event)
+        } else if pointInBg.x >= backgroundView.bounds.width - edgeMargin && pagedContainer.currentPage + 1 < pagedContainer.pageCount {
+            scheduleEdgePageTurn(direction: 1, event: event)
+        } else {
+            cancelEdgePageTurn()
+        }
+
+        // 目标应用 / 目录命中检测（同时覆盖图标中心与指针位置）
+        let candidate = currentDropCandidate(windowPoint: event.locationInWindow, draggedPath: dragged.path)
+        if candidate !== dropTargetItemView {
+            dropTargetItemView?.setMergeHighlighted(false)
+            dropTargetItemView = candidate
+            dropTargetItemView?.setMergeHighlighted(true)
+        }
+    }
+
+    private func scheduleEdgePageTurn(direction: Int, event: NSEvent) {
+        if edgePageDirection == direction && edgePageTimer != nil { return }
+        cancelEdgePageTurn()
+        edgePageDirection = direction
+        let windowPoint = event.locationInWindow
+        edgePageTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.draggingApp != nil else { return }
+                self.edgePageTimer = nil
+                self.edgePageDirection = 0
+                if direction < 0 {
+                    self.pagedContainer.previousPage()
+                } else {
+                    self.pagedContainer.nextPage()
+                }
+                self.dropTargetItemView?.setMergeHighlighted(false)
+                if let dragged = self.draggingApp {
+                    let candidate = self.currentDropCandidate(windowPoint: windowPoint, draggedPath: dragged.path)
+                    self.dropTargetItemView = candidate
+                    candidate?.setMergeHighlighted(true)
+                }
+            }
+        }
+    }
+
+    private func cancelEdgePageTurn() {
+        edgePageTimer?.invalidate()
+        edgePageTimer = nil
+        edgePageDirection = 0
+    }
+
+    private func endAppDrag(event: NSEvent) {
+        cancelEdgePageTurn()
+        guard let dragged = draggingApp else {
+            cancelAppDrag()
+            return
+        }
+
+        let targetView = dropTargetItemView ?? currentDropCandidate(windowPoint: event.locationInWindow, draggedPath: dragged.path)
+        let targetApp = targetView?.appRecord
+        targetView?.setMergeHighlighted(false)
+        dropTargetItemView = nil
+
+        if let targetView, let targetApp, let floating = dragFloatingView {
+            let targetFrameInBg = targetView.convert(targetView.iconFrameInSelf, to: backgroundView)
+            draggingApp = nil
+            draggingItemView = nil
+            dragFloatingView = nil
+
+            if let layer = floating.layer {
+                let center = CGPoint(x: floating.bounds.midX, y: floating.bounds.midY)
+                let shrink = AnimationHelper.makeScaleTransform(scale: 0.55, center: center)
+                LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: shrink), duration: 0.14, curve: CAMediaTimingFunction(name: .easeIn))
+            }
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.14
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                floating.animator().setFrameOrigin(targetFrameInBg.origin)
+                floating.animator().alphaValue = 0
+            }, completionHandler: { [weak floating] in
+                Task { @MainActor in
+                    floating?.removeFromSuperview()
+                }
+            })
+            mergeAppsIntoFolder(draggedApp: dragged, targetApp: targetApp)
+        } else if let floating = dragFloatingView, let sourceView = draggingItemView {
+            let homeFrame = sourceView.convert(sourceView.iconFrameInSelf, to: backgroundView)
+            draggingApp = nil
+            draggingItemView = nil
+            dragFloatingView = nil
+
+            if let layer = floating.layer {
+                LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: CATransform3DIdentity), duration: 0.18, curve: CAMediaTimingFunction(name: .easeOut))
+            }
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.18
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                floating.animator().setFrameOrigin(homeFrame.origin)
+            }, completionHandler: { [weak floating, weak sourceView] in
+                Task { @MainActor in
+                    floating?.removeFromSuperview()
+                    sourceView?.setDragSourceHidden(false)
+                }
+            })
+        } else {
+            cancelAppDrag()
+        }
+    }
+
+    private func cancelAppDrag() {
+        cancelEdgePageTurn()
+        dropTargetItemView?.setMergeHighlighted(false)
+        dropTargetItemView = nil
+        dragFloatingView?.removeFromSuperview()
+        dragFloatingView = nil
+        draggingItemView?.setDragSourceHidden(false)
+        draggingItemView = nil
+        draggingApp = nil
+        pointerDragging = false
+    }
+
+    private func mergeAppsIntoFolder(draggedApp: AppRecord, targetApp: AppRecord) {
+        let keepPage = pagedContainer.currentPage
+        let folderName = layout.merge(draggedApp: draggedApp, onto: targetApp, allApps: apps)
+        for index in apps.indices {
+            if apps[index].path == draggedApp.path || (!targetApp.path.hasPrefix("chu-folder:") && apps[index].path == targetApp.path) {
+                apps[index].folder = folderName
+            }
+        }
+        if openFolder != nil {
+            folderSearchCapsule.stringValue = ""
+            closeFolder()
+        }
+        do {
+            try LayoutStore.save(layout)
+        } catch {
+            logger.error("Could not save merged folder: \(error.localizedDescription, privacy: .public)")
+            NSSound.beep()
+            return
+        }
+        let appSnapshot = apps
+        storageQueue.async { try? AppIndexStore.save(appSnapshot) }
+        filter(query: searchCapsule.stringValue, targetPage: keepPage)
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if launcherTargetVisible { hide() } else { show() }
         return true
@@ -2790,6 +3164,7 @@ private enum AppSortOrder: Int {
     private func hide(completion: (@MainActor () -> Void)? = nil) {
         pagedContainer.clearHover()
         folderPages.clearHover()
+        cancelAppDrag()
         if !window.isVisible {
             showRequestGeneration += 1
             launcherTargetVisible = false
@@ -2999,10 +3374,11 @@ private enum AppSortOrder: Int {
             guard generation == scanGeneration else { return }
             if transitionInProgress || openFolder != nil { pendingRefresh = true; return }
             let oldPaths = layout.paths
+            let oldFolders = layout.folders
             apps = layout.reconcile(result)
             applyCurrentSort()
             loadedFolderItems = nil
-            if oldPaths != layout.paths {
+            if oldPaths != layout.paths || oldFolders != layout.folders {
                 let snapshot = layout
                 storageQueue.async { try? LayoutStore.save(snapshot) }
                 iconCache.removeAllObjects()
@@ -3033,11 +3409,11 @@ private enum AppSortOrder: Int {
             for (path, image) in icons {
                 iconCache.setObject(NSImage(cgImage: image, size: NSSize(width: 128, height: 128)), forKey: path as NSString)
             }
-            filter(query: searchCapsule.stringValue)
+            filter(query: searchCapsule.stringValue, targetPage: pagedContainer.currentPage)
         }
     }
 
-    private func filter(query: String) {
+    private func filter(query: String, targetPage: Int = 0) {
         if transitionInProgress { pendingQuery = query; return }
         if openFolder != nil { pendingQuery = query; closeFolder(); return }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3063,17 +3439,67 @@ private enum AppSortOrder: Int {
         } else {
             displayed = filtered
         }
-        reloadDisplayed()
+        reloadDisplayed(targetPage: targetPage)
     }
 
     private func scheduleBackdropWarmup() {
         // The prepared wallpaper is already cached; opening a folder needs no screen capture.
     }
 
-    private func reloadDisplayed() {
-        pagedContainer.reloadPages(apps: displayed, folders: folderContents, iconCache: iconCache, targetPage: 0)
+    private func reloadDisplayed(targetPage: Int = 0) {
+        pagedContainer.onCreateFolder = { [weak self] app in self?.createFolder(containing: app) }
+        pagedContainer.onMoveToFolder = { [weak self] app, folder in self?.move(app, to: folder) }
+        folderPages.onCreateFolder = pagedContainer.onCreateFolder
+        folderPages.onMoveToFolder = pagedContainer.onMoveToFolder
+        pagedContainer.reloadPages(apps: displayed, folders: folderContents, iconCache: iconCache, targetPage: targetPage, onCreateFolder: { [weak self] in self?.createFolder(containing: $0) }, onMoveToFolder: { [weak self] app, folder in self?.move(app, to: folder) })
         pageIndicator.count = pagedContainer.pageCount
         pageIndicator.current = pagedContainer.currentPage
+    }
+
+    private func persistLayoutAndRefresh() {
+        do {
+            try LayoutStore.save(layout)
+        } catch {
+            logger.error("Could not save app layout: \(error.localizedDescription, privacy: .public)")
+            NSSound.beep()
+            return
+        }
+        for index in apps.indices { apps[index].folder = layout.folders[apps[index].path] ?? apps[index].folder }
+        let appSnapshot = apps
+        storageQueue.async { try? AppIndexStore.save(appSnapshot) }
+        filter(query: searchCapsule.stringValue, targetPage: pagedContainer.currentPage)
+    }
+
+    private func createFolder(containing app: AppRecord) {
+        let alert = NSAlert()
+        alert.messageText = "新建分组"
+        alert.addButton(withTitle: "创建")
+        alert.addButton(withTitle: "取消")
+        let field = NSTextField(string: Layout.nextAvailableFolderName(existingNames: Set(apps.compactMap(\.folder))))
+        field.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        layout.folders[app.path] = name
+        persistLayoutAndRefresh()
+    }
+
+    private func move(_ app: AppRecord, to folder: String?) {
+        if app.path.hasPrefix("chu-folder:") {
+            guard let folder, folder.hasPrefix("rename:") else { return }
+            let oldName = app.name
+            let newName = String(folder.dropFirst("rename:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !newName.isEmpty else { return }
+            for record in apps where layout.folders[record.path] == oldName || record.folder == oldName {
+                layout.folders[record.path] = newName
+            }
+        } else if let folder {
+            layout.folders[app.path] = folder
+        } else {
+            layout.folders.removeValue(forKey: app.path)
+        }
+        persistLayoutAndRefresh()
     }
 
     private func filterFolder(query: String) {
