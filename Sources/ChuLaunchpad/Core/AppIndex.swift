@@ -86,9 +86,11 @@ struct Layout: Codable, Sendable {
         let newPaths = unique.map(\.path).filter { !preservedSet.contains($0) }
         paths = preservedPaths + newPaths
         var ordered = paths.compactMap { byPath[$0] }
-        folders = folders.filter { seen.contains($0.key) && !$0.value.isEmpty }
+        folders = folders.filter { seen.contains($0.key) }
         for index in ordered.indices {
-            ordered[index].folder = folders[ordered[index].path]
+            if let override = folders[ordered[index].path] {
+                ordered[index].folder = override.isEmpty ? nil : override
+            }
         }
         return ordered
     }

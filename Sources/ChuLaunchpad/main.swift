@@ -499,6 +499,54 @@ enum AnimationHelper {
     }
 }
 
+@MainActor final class FolderRenameView: NSView {
+    let field: NSTextField
+    var onFinish: ((String?) -> Void)?
+    private let card = NSView()
+
+    init(frame: NSRect, name: String, icon: NSImage) {
+        field = NSTextField(string: name)
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
+        card.wantsLayer = true
+        card.layer?.backgroundColor = NSColor(white: 0.18, alpha: 0.96).cgColor
+        card.layer?.cornerRadius = 20
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        addSubview(card)
+        let image = NSImageView(frame: NSRect(x: 24, y: 146, width: 72, height: 72))
+        image.image = icon
+        image.imageScaling = .scaleProportionallyUpOrDown
+        card.addSubview(image)
+        let label = NSTextField(labelWithString: "重命名分组")
+        label.frame = NSRect(x: 24, y: 115, width: 300, height: 24)
+        label.font = .systemFont(ofSize: 16, weight: .semibold)
+        label.textColor = .white
+        card.addSubview(label)
+        field.frame = NSRect(x: 24, y: 72, width: 312, height: 28)
+        field.font = .systemFont(ofSize: 15)
+        card.addSubview(field)
+        let cancelButton = NSButton(title: "取消", target: self, action: #selector(cancel))
+        cancelButton.frame = NSRect(x: 24, y: 20, width: 148, height: 32)
+        card.addSubview(cancelButton)
+        let confirmButton = NSButton(title: "完成", target: self, action: #selector(confirm))
+        confirmButton.bezelColor = .systemBlue
+        confirmButton.frame = NSRect(x: 188, y: 20, width: 148, height: 32)
+        card.addSubview(confirmButton)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func layout() {
+        super.layout()
+        card.frame = NSRect(x: (bounds.width - 360) / 2, y: (bounds.height - 240) / 2, width: 360, height: 240)
+    }
+
+    @objc func cancel() { onFinish?(nil) }
+    @objc func confirm() { onFinish?(field.stringValue) }
+}
+
 // MARK: - 单个应用图标项 (App Item View)
 @MainActor final class AppItemView: NSView {
     private let iconImageView = NSImageView()
@@ -518,6 +566,7 @@ enum AnimationHelper {
     private var onCreateFolder: ((AppRecord) -> Void)?
     private var onMoveToFolder: ((AppRecord, String?) -> Void)?
     private var availableFolders: [String] = []
+    var isInsideFolder = false
     private var isPressed = false
     private var isMergeHighlighted = false
 
@@ -649,9 +698,11 @@ enum AnimationHelper {
         guard let appRecord else { return nil }
         let menu = NSMenu()
         if !appRecord.path.hasPrefix("chu-folder:") {
-            let create = menu.addItem(withTitle: "新建分组", action: #selector(createFolderFromMenu), keyEquivalent: "")
-            create.target = self
-            MenuSymbols.apply("folder.badge.plus", to: create)
+            if !isInsideFolder {
+                let create = menu.addItem(withTitle: "新建分组", action: #selector(createFolderFromMenu), keyEquivalent: "")
+                create.target = self
+                MenuSymbols.apply("folder.badge.plus", to: create)
+            }
 
             let move = menu.addItem(withTitle: "移至分组", action: nil, keyEquivalent: "")
             let submenu = NSMenu()
@@ -693,16 +744,7 @@ enum AnimationHelper {
     }
     @objc private func renameFolderFromMenu() {
         guard let appRecord, appRecord.path.hasPrefix("chu-folder:") else { return }
-        let alert = NSAlert()
-        alert.messageText = "重命名分组"
-        alert.addButton(withTitle: "完成")
-        alert.addButton(withTitle: "取消")
-        let field = NSTextField(string: appRecord.name)
-        field.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
-        alert.accessoryView = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !name.isEmpty { onMoveToFolder?(appRecord, "rename:\(name)") }
+        onMoveToFolder?(appRecord, "rename:")
     }
 
     @objc private func openFromMenu() {
@@ -757,6 +799,10 @@ enum AnimationHelper {
         animatePress(down: false)
         let point = convert(event.locationInWindow, from: nil)
         if bounds.contains(point), let appRecord {
+            if appRecord.path.hasPrefix("chu-folder:"), nameLabel.frame.contains(point) {
+                renameFolderFromMenu()
+                return
+            }
             onOpen?(appRecord, self)
         }
     }
@@ -948,7 +994,7 @@ enum AnimationHelper {
         itemViews.first { $0.appRecord == app }
     }
 
-    private static func folderIcon(apps: [AppRecord], iconCache: NSCache<NSString, NSImage>) -> NSImage {
+    static func folderIcon(apps: [AppRecord], iconCache: NSCache<NSString, NSImage>) -> NSImage {
         let image = NSImage(size: NSSize(width: 128, height: 128))
         image.lockFocus()
         let glassRect = NSRect(x: 12, y: 12, width: 104, height: 104)
@@ -1275,6 +1321,7 @@ enum AnimationHelper {
     var onCreateFolder: ((AppRecord) -> Void)?
     var onMoveToFolder: ((AppRecord, String?) -> Void)?
     var onBlankAreaClicked: (() -> Void)?
+    var isInsideFolder = false
 
     // 交互式滑动手势状态
     private var isDragging = false
@@ -1330,6 +1377,7 @@ enum AnimationHelper {
             pageView.populate(apps: pageApps, folders: folders, iconCache: iconCache, onOpen: { [weak self] app, itemView in
                 self?.onOpenApp?(app, itemView)
             }, onCreateFolder: onCreateFolder, onMoveToFolder: onMoveToFolder)
+            for item in pageView.items { item.isInsideFolder = isInsideFolder }
             pageView.onBlankDragStart = { [weak self] event in self?.beginMouseDrag(event) }
             pageView.onBlankDragMove = { [weak self] event in self?.moveMouseDrag(event) }
             pageView.onBlankDragEnd = { [weak self] event in self?.endMouseDrag(event) }
@@ -2149,6 +2197,7 @@ private enum AppSortOrder: Int {
     private let searchCapsule = SearchCapsuleView(frame: .zero)
     private let moreMenu = NSMenu()
     private var settingsPanel: SettingsPanelView?
+    private var renamePanel: FolderRenameView?
     private var dockStatusTimer: Timer?
     private var dockStatusBusy = false
     private let hotKeyManager = GlobalHotKeyManager()
@@ -2321,7 +2370,9 @@ private enum AppSortOrder: Int {
             self.folderSearchCapsule.stringValue = ""
             self.updateMoreButton()
             self.displayed = self.folderMainItems
-            if let query = self.pendingQuery { self.pendingQuery = nil; self.filter(query: query) }
+            let query = self.pendingQuery ?? self.searchCapsule.stringValue
+            self.pendingQuery = nil
+            self.filter(query: query, targetPage: self.pagedContainer.currentPage)
             if self.pendingRefresh { self.pendingRefresh = false; self.refresh() }
             if self.window.isVisible, self.settingsPanel == nil {
                 self.searchCapsule.makeFirstResponder()
@@ -2338,6 +2389,7 @@ private enum AppSortOrder: Int {
                 self.closeFolder()
             }
         }
+        folderPages.isInsideFolder = true
         folderPages.onOpenApp = { [weak self] app, itemView in self?.open(app, from: itemView) }
         folderPages.onBlankAreaClicked = { [weak self] in self?.closeFolder() }
         folderPages.onPageChanged = { [weak self] page in self?.folderIndicator.current = page }
@@ -2766,7 +2818,7 @@ private enum AppSortOrder: Int {
                 self.endAppDrag(event: event)
                 return nil
             }
-            guard event.window === self.window, self.window.isVisible, self.settingsPanel == nil, !self.isLaunching else { return event }
+            guard event.window === self.window, self.window.isVisible, self.settingsPanel == nil, self.renamePanel == nil, !self.isLaunching else { return event }
             switch event.type {
             case .leftMouseDown:
                 self.pointerDown = event
@@ -2791,8 +2843,7 @@ private enum AppSortOrder: Int {
                     self.pointerItem?.cancelPress()
                     if let item = self.pointerItem,
                        let app = item.appRecord,
-                       self.openFolder == nil,
-                       self.searchCapsule.stringValue.isEmpty,
+                       (self.openFolder != nil || self.searchCapsule.stringValue.isEmpty),
                        !app.path.hasPrefix("chu-folder:") {
                         self.beginAppDrag(item: item, app: app, downEvent: down, currentEvent: event)
                     } else {
@@ -2816,7 +2867,18 @@ private enum AppSortOrder: Int {
                     self.endAppDrag(event: event)
                     return nil
                 }
-                guard self.pointerDown != nil else { return event }
+                guard let down = self.pointerDown else { return event }
+                if !self.pointerDragging, self.openFolder != nil {
+                    let downPoint = self.folderTitle.convert(down.locationInWindow, from: nil)
+                    let upPoint = self.folderTitle.convert(event.locationInWindow, from: nil)
+                    let width = min(self.folderTitle.bounds.width, self.folderTitle.intrinsicContentSize.width + 16)
+                    let titleRect = NSRect(x: self.folderTitle.bounds.midX - width / 2, y: 0, width: width, height: self.folderTitle.bounds.height)
+                    if titleRect.contains(downPoint) && titleRect.contains(upPoint) {
+                        self.pointerDown = nil
+                        self.renameOpenFolder()
+                        return nil
+                    }
+                }
                 self.pointerDown = nil
                 if self.pointerDragging {
                     self.pointerDragging = false
@@ -2835,6 +2897,11 @@ private enum AppSortOrder: Int {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window.isVisible, self.window.attachedSheet == nil, event.window === self.window, !self.isLaunching else { return event }
 
+            if let panel = self.renamePanel {
+                if event.keyCode == 53 { panel.cancel(); return nil }
+                if event.keyCode == 36 { panel.confirm(); return nil }
+                return event
+            }
             if let panel = self.settingsPanel {
                 if panel.isRecordingHotKey {
                     _ = panel.handleRecordingKeyDown(event)
@@ -2938,7 +3005,7 @@ private enum AppSortOrder: Int {
         floating.layer?.shadowRadius = 12
         floating.layer?.shadowOffset = CGSize(width: 0, height: -4)
 
-        backgroundView.addSubview(floating, positioned: .below, relativeTo: folderBackdrop)
+        backgroundView.addSubview(floating, positioned: openFolder == nil ? .below : .above, relativeTo: folderBackdrop)
         if let layer = floating.layer {
             let center = CGPoint(x: floating.bounds.midX, y: floating.bounds.midY)
             let scale = AnimationHelper.makeScaleTransform(scale: 1.08, center: center)
@@ -2969,6 +3036,8 @@ private enum AppSortOrder: Int {
             y: pointInBg.y - dragPointerOffset.y - floating.bounds.height / 2
         )
         floating.setFrameOrigin(newOrigin)
+
+        if openFolder != nil { return }
 
         // 边缘自动翻页检测
         let edgeMargin: CGFloat = 56
@@ -3024,6 +3093,17 @@ private enum AppSortOrder: Int {
         cancelEdgePageTurn()
         guard let dragged = draggingApp else {
             cancelAppDrag()
+            return
+        }
+
+        if openFolder != nil {
+            let point = folderPanel.convert(event.locationInWindow, from: nil)
+            if !folderPanel.bounds.contains(point) {
+                cancelAppDrag()
+                move(dragged, to: nil)
+            } else {
+                cancelAppDrag()
+            }
             return
         }
 
@@ -3109,8 +3189,6 @@ private enum AppSortOrder: Int {
             NSSound.beep()
             return
         }
-        let appSnapshot = apps
-        storageQueue.async { try? AppIndexStore.save(appSnapshot) }
         filter(query: searchCapsule.stringValue, targetPage: keepPage)
     }
 
@@ -3464,9 +3542,18 @@ private enum AppSortOrder: Int {
             NSSound.beep()
             return
         }
-        for index in apps.indices { apps[index].folder = layout.folders[apps[index].path] ?? apps[index].folder }
-        let appSnapshot = apps
-        storageQueue.async { try? AppIndexStore.save(appSnapshot) }
+        for index in apps.indices {
+            if let override = layout.folders[apps[index].path] {
+                apps[index].folder = override.isEmpty ? nil : override
+            }
+        }
+        if let folder = openFolder {
+            folderContents = Dictionary(grouping: apps.filter { $0.folder != nil }, by: { $0.folder! })
+            folderContents[folder, default: []] = folderContents[folder] ?? []
+            loadedFolderItems = nil
+            filterFolder(query: folderSearchCapsule.stringValue)
+            return
+        }
         filter(query: searchCapsule.stringValue, targetPage: pagedContainer.currentPage)
     }
 
@@ -3485,19 +3572,52 @@ private enum AppSortOrder: Int {
         persistLayoutAndRefresh()
     }
 
+    private func showRenameFolder(_ name: String) {
+        guard renamePanel == nil else { return }
+        let icon = PageGridView.folderIcon(apps: apps.filter { $0.folder == name }, iconCache: iconCache)
+        let panel = FolderRenameView(frame: backgroundView.bounds, name: name, icon: icon)
+        panel.autoresizingMask = [.width, .height]
+        panel.onFinish = { [weak self, weak panel] newName in
+            guard let self else { return }
+            panel?.removeFromSuperview()
+            self.renamePanel = nil
+            if let newName {
+                self.move(AppRecord(path: "chu-folder:" + name, name: name), to: "rename:" + newName)
+            }
+        }
+        backgroundView.addSubview(panel, positioned: .above, relativeTo: folderBackdrop)
+        renamePanel = panel
+        window.makeFirstResponder(panel.field)
+        panel.field.currentEditor()?.selectAll(nil)
+    }
+
+    private func renameOpenFolder() {
+        guard let name = openFolder else { return }
+        showRenameFolder(name)
+    }
+
     private func move(_ app: AppRecord, to folder: String?) {
         if app.path.hasPrefix("chu-folder:") {
             guard let folder, folder.hasPrefix("rename:") else { return }
             let oldName = app.name
+            if folder == "rename:" { showRenameFolder(oldName); return }
             let newName = String(folder.dropFirst("rename:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !newName.isEmpty else { return }
+            guard !newName.isEmpty, newName != oldName else { return }
+            guard !apps.contains(where: { $0.folder == newName }) else {
+                NSSound.beep()
+                return
+            }
+            if openFolder == oldName {
+                openFolder = newName
+                folderTitle.stringValue = newName
+            }
             for record in apps where layout.folders[record.path] == oldName || record.folder == oldName {
                 layout.folders[record.path] = newName
             }
         } else if let folder {
             layout.folders[app.path] = folder
         } else {
-            layout.folders.removeValue(forKey: app.path)
+            layout.folders[app.path] = ""
         }
         persistLayoutAndRefresh()
     }
@@ -3507,7 +3627,7 @@ private enum AppSortOrder: Int {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let matched = trimmed.isEmpty ? contents : contents.filter { $0.name.localizedStandardContains(trimmed) }
         displayed = matched
-        folderPages.reloadPages(apps: matched, folders: [:], iconCache: iconCache, targetPage: 0)
+        folderPages.reloadPages(apps: matched, folders: folderContents, iconCache: iconCache, targetPage: 0, onCreateFolder: { [weak self] in self?.createFolder(containing: $0) }, onMoveToFolder: { [weak self] app, folder in self?.move(app, to: folder) })
         loadedFolderItems = matched
         folderIndicator.count = folderPages.pageCount
         folderIndicator.current = folderPages.currentPage
@@ -3537,7 +3657,7 @@ private enum AppSortOrder: Int {
 
         layoutFolderPanel()
         if loadedFolderItems != contents {
-            folderPages.reloadPages(apps: contents, folders: [:], iconCache: iconCache)
+            folderPages.reloadPages(apps: contents, folders: folderContents, iconCache: iconCache, onCreateFolder: { [weak self] in self?.createFolder(containing: $0) }, onMoveToFolder: { [weak self] app, folder in self?.move(app, to: folder) })
             loadedFolderItems = contents
         } else {
             folderPages.scrollToPage(0, animated: false)
