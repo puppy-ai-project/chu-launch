@@ -2549,6 +2549,8 @@ private enum AppSortOrder: Int {
     private var pointerDragging = false
     private var pointerIsBlank = false
     private var pointerCommandSelecting = false
+    private var pointerHadSelection = false
+    private var pointerPreservesSelection = false
     private weak var pointerItem: AppItemView?
     private var selectedAppPaths = Set<String>()
     private var appDragMonitor: Any?
@@ -3168,6 +3170,8 @@ private enum AppSortOrder: Int {
                 self.pointerDown = event
                 self.pointerDragging = false
                 self.pointerCommandSelecting = event.modifierFlags.contains(.command)
+                self.pointerHadSelection = !self.selectedAppPaths.isEmpty
+                self.pointerPreservesSelection = false
                 self.pointerItem = nil
                 let point = self.backgroundView.convert(event.locationInWindow, from: nil)
                 var target = self.backgroundView.hitTest(point)
@@ -3178,7 +3182,12 @@ private enum AppSortOrder: Int {
                 var isControl = inFolderPanel
                 while let view = target {
                     if let item = view as? AppItemView { self.pointerItem = item; isControl = true; break }
-                    if view is SearchCapsuleView || view is PageIndicator || view === self.moreButton || view === self.updateNoticeButton { isControl = true; break }
+                    if view is SearchCapsuleView || view === self.moreButton {
+                        self.pointerPreservesSelection = true
+                        isControl = true
+                        break
+                    }
+                    if view is PageIndicator || view === self.updateNoticeButton { isControl = true; break }
                     target = view.superview
                 }
                 self.pointerIsBlank = !isControl
@@ -3233,6 +3242,7 @@ private enum AppSortOrder: Int {
                 if self.pointerDragging {
                     self.pointerDragging = false
                     self.pointerCommandSelecting = false
+                    self.pointerHadSelection = false
                     self.activePages.endMouseDrag(event)
                     return nil
                 }
@@ -3244,9 +3254,20 @@ private enum AppSortOrder: Int {
                     self.toggleMultiSelection(app, in: item)
                     item.cancelPress()
                     self.pointerCommandSelecting = false
+                    self.pointerHadSelection = false
                     return nil
                 }
                 self.pointerCommandSelecting = false
+                if self.pointerHadSelection {
+                    self.pointerHadSelection = false
+                    if self.pointerPreservesSelection { return event }
+                    if self.pointerIsBlank || self.pointerItem != nil {
+                        self.clearMultiSelection()
+                        self.pointerItem?.cancelPress()
+                        return nil
+                    }
+                    self.clearMultiSelection()
+                }
                 if self.pointerIsBlank {
                     self.clearMultiSelection()
                     if self.openFolder != nil { self.closeFolder() } else { self.hide() }
