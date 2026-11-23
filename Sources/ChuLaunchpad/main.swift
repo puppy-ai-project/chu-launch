@@ -808,6 +808,7 @@ enum AnimationHelper {
 // MARK: - 单个应用图标项 (App Item View)
 @MainActor final class AppItemView: NSView {
     private let iconImageView = NSImageView()
+    private let selectionBox = NSView()
     var folderThumbnailFrame: CGRect {
         let frame = iconImageView.frame
         return frame.insetBy(dx: frame.width * 12 / 128, dy: frame.height * 12 / 128)
@@ -827,6 +828,7 @@ enum AnimationHelper {
     var isInsideFolder = false
     private var isPressed = false
     private var isMergeHighlighted = false
+    private var isMultiSelected = false
 
     override var isFlipped: Bool { true }
 
@@ -851,6 +853,14 @@ enum AnimationHelper {
         mergePreviewBox.alphaValue = 0
         mergePreviewBox.isHidden = true
         addSubview(mergePreviewBox)
+
+        selectionBox.wantsLayer = true
+        selectionBox.layer?.cornerRadius = 22
+        selectionBox.layer?.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.20).cgColor
+        selectionBox.layer?.borderWidth = 1.5
+        selectionBox.layer?.borderColor = NSColor.white.withAlphaComponent(0.72).cgColor
+        selectionBox.alphaValue = 0
+        addSubview(selectionBox)
 
         iconImageView.imageScaling = .scaleProportionallyUpOrDown
         iconImageView.wantsLayer = true
@@ -887,6 +897,8 @@ enum AnimationHelper {
         mergePreviewBox.frame = iconImageView.frame.insetBy(dx: -6, dy: -6)
         mergePreviewBox.layer?.cornerRadius = max(16, (iconSize + 12) * 0.24)
         nameLabel.frame = NSRect(x: 4, y: startY + iconSize + spacing, width: bounds.width - 8, height: labelHeight)
+        selectionBox.frame = highlightRect
+        selectionBox.layer?.cornerRadius = max(18, (iconSize + 32) * 0.22)
     }
 
     var highlightRect: NSRect {
@@ -939,6 +951,15 @@ enum AnimationHelper {
         })
     }
 
+    func setMultiSelected(_ selected: Bool) {
+        guard isMultiSelected != selected else { return }
+        isMultiSelected = selected
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.12
+            selectionBox.animator().alphaValue = selected ? 1 : 0
+        }
+    }
+
     func configure(app: AppRecord, icon: NSImage, onOpen: @escaping (AppRecord, AppItemView) -> Void) {
         self.appRecord = app
         self.onOpen = onOpen
@@ -954,9 +975,34 @@ enum AnimationHelper {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let appRecord else { return nil }
+        let selectedApps = (!isInsideFolder && !appRecord.path.hasPrefix("chu-folder:"))
+            ? ((NSApp.delegate as? AppDelegate)?.prepareSelectionForContextMenu(appRecord, itemView: self) ?? [appRecord])
+            : [appRecord]
+        let hasMultipleSelection = selectedApps.count > 1
         let menu = NSMenu()
+        if hasMultipleSelection && !isInsideFolder && !appRecord.path.hasPrefix("chu-folder:") {
+            let selectionCount = selectedApps.count
+            let selectionLabel = menu.addItem(withTitle: "已选择 \(selectionCount) 个应用", action: nil, keyEquivalent: "")
+            selectionLabel.isEnabled = false
+            let createGroup = menu.addItem(withTitle: "新建分组", action: #selector(AppDelegate.createGroupFromSelectionMenu), keyEquivalent: "")
+            createGroup.target = NSApp.delegate
+            MenuSymbols.apply("folder.badge.plus", to: createGroup)
+            let move = menu.addItem(withTitle: "移动分组", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            let ungroup = submenu.addItem(withTitle: "无分组", action: #selector(AppDelegate.moveSelectionToFolderMenu(_:)), keyEquivalent: "")
+            ungroup.target = NSApp.delegate
+            ungroup.representedObject = ""
+            for name in availableFolders {
+                let item = submenu.addItem(withTitle: name, action: #selector(AppDelegate.moveSelectionToFolderMenu(_:)), keyEquivalent: "")
+                item.target = NSApp.delegate
+                item.representedObject = name
+            }
+            move.submenu = submenu
+            return menu
+        }
+
         if !appRecord.path.hasPrefix("chu-folder:") {
-            if !isInsideFolder {
+            if !isInsideFolder && !hasMultipleSelection {
                 let create = menu.addItem(withTitle: "新建分组", action: #selector(createFolderFromMenu), keyEquivalent: "")
                 create.target = self
                 MenuSymbols.apply("folder.badge.plus", to: create)
@@ -1716,6 +1762,8 @@ enum AnimationHelper {
         pagesTrackView.layer?.add(fadeAnim, forKey: "entranceFade")
     }
 
+    var allItems: [AppItemView] { pageViews.flatMap(\.items) }
+
     func findItemView(for app: AppRecord) -> AppItemView? {
         for pageView in pageViews {
             if let found = pageView.findItemView(for: app) {
@@ -2467,6 +2515,7 @@ private enum AppSortOrder: Int {
     private let hotKeyManager = GlobalHotKeyManager()
     private let updateManager = AppUpdateManager()
     private let moreButton = NSButton()
+    private let selectionCountLabel = NSTextField(labelWithString: "")
     private let updateNoticeButton = NSButton()
     private let pagedContainer = PagedContainerView(frame: .zero)
     private let pageIndicator = PageIndicator()
@@ -2499,7 +2548,9 @@ private enum AppSortOrder: Int {
     private var pointerDown: NSEvent?
     private var pointerDragging = false
     private var pointerIsBlank = false
+    private var pointerCommandSelecting = false
     private weak var pointerItem: AppItemView?
+    private var selectedAppPaths = Set<String>()
     private var appDragMonitor: Any?
     private weak var draggingItemView: AppItemView?
     private var draggingApp: AppRecord?
@@ -2594,6 +2645,12 @@ private enum AppSortOrder: Int {
         moreButton.layer?.backgroundColor = NSColor(white: 0.15, alpha: 0.45).cgColor
         moreButton.layer?.cornerRadius = 16
         backgroundView.addSubview(moreButton)
+        selectionCountLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        selectionCountLabel.textColor = .white
+        selectionCountLabel.alignment = .left
+        selectionCountLabel.setAccessibilityLabel("")
+        selectionCountLabel.isHidden = true
+        backgroundView.addSubview(selectionCountLabel)
         updateNoticeButton.title = "发现新版本"
         updateNoticeButton.font = .systemFont(ofSize: 12, weight: .semibold)
         updateNoticeButton.contentTintColor = .white
@@ -2790,6 +2847,19 @@ private enum AppSortOrder: Int {
     private func updateMoreButton() {
         let controlsHidden = openFolder != nil || !searchCapsule.stringValue.isEmpty
         moreButton.isHidden = controlsHidden
+        let selectedCount = selectedAppPaths.count
+        selectionCountLabel.stringValue = selectedCount > 0 ? "已选择 \(selectedCount) 个应用" : ""
+        selectionCountLabel.setAccessibilityLabel(selectedCount > 0 ? "已选择 \(selectedCount) 个应用" : "")
+        selectionCountLabel.sizeToFit()
+        let labelWidth = selectedCount > 0 ? selectionCountLabel.intrinsicContentSize.width : 0
+        let labelHeight: CGFloat = 20
+        selectionCountLabel.frame = NSRect(
+            x: moreButton.frame.maxX + 8,
+            y: moreButton.frame.midY - labelHeight / 2,
+            width: labelWidth,
+            height: labelHeight
+        )
+        selectionCountLabel.isHidden = controlsHidden || selectedCount == 0
         let hasAvailableUpdate: Bool
         if case .available = updateManager.state {
             hasAvailableUpdate = true
@@ -2797,6 +2867,8 @@ private enum AppSortOrder: Int {
             hasAvailableUpdate = false
         }
         updateNoticeButton.isHidden = controlsHidden || !hasAvailableUpdate
+        let noticeX = selectionCountLabel.isHidden ? moreButton.frame.maxX + 8 : selectionCountLabel.frame.maxX + 8
+        updateNoticeButton.frame.origin.x = noticeX
     }
 
     private func updateSortMenu() {
@@ -3095,6 +3167,7 @@ private enum AppSortOrder: Int {
             case .leftMouseDown:
                 self.pointerDown = event
                 self.pointerDragging = false
+                self.pointerCommandSelecting = event.modifierFlags.contains(.command)
                 self.pointerItem = nil
                 let point = self.backgroundView.convert(event.locationInWindow, from: nil)
                 var target = self.backgroundView.hitTest(point)
@@ -3156,14 +3229,32 @@ private enum AppSortOrder: Int {
                     }
                 }
                 self.pointerDown = nil
+                let wasCommandSelecting = self.pointerCommandSelecting
                 if self.pointerDragging {
                     self.pointerDragging = false
+                    self.pointerCommandSelecting = false
                     self.activePages.endMouseDrag(event)
                     return nil
                 }
+                if !self.pointerDragging, wasCommandSelecting,
+                   self.openFolder == nil,
+                   let item = self.pointerItem,
+                   let app = item.appRecord,
+                   !app.path.hasPrefix("chu-folder:") {
+                    self.toggleMultiSelection(app, in: item)
+                    item.cancelPress()
+                    self.pointerCommandSelecting = false
+                    return nil
+                }
+                self.pointerCommandSelecting = false
                 if self.pointerIsBlank {
+                    self.clearMultiSelection()
                     if self.openFolder != nil { self.closeFolder() } else { self.hide() }
                     return nil
+                }
+                let clickedFolder = self.pointerItem?.appRecord?.path.hasPrefix("chu-folder:") ?? false
+                if (!wasCommandSelecting || clickedFolder), self.pointerItem != nil {
+                    self.clearMultiSelection()
                 }
                 return event
             default: return event
@@ -3188,7 +3279,9 @@ private enum AppSortOrder: Int {
             }
             // Esc 键
             if event.keyCode == 53 {
-                if self.openFolder != nil {
+                if !self.selectedAppPaths.isEmpty {
+                    self.clearMultiSelection()
+                } else if self.openFolder != nil {
                     if !self.folderSearchCapsule.stringValue.isEmpty {
                         self.folderSearchCapsule.stringValue = ""
                     } else {
@@ -3784,6 +3877,7 @@ private enum AppSortOrder: Int {
     private func filter(query: String, targetPage: Int = 0) {
         if transitionInProgress { pendingQuery = query; return }
         if openFolder != nil { pendingQuery = query; closeFolder(); return }
+        clearMultiSelection()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         openFolder = nil
         folderBackdrop.isHidden = true
@@ -3820,6 +3914,9 @@ private enum AppSortOrder: Int {
         folderPages.onCreateFolder = pagedContainer.onCreateFolder
         folderPages.onMoveToFolder = pagedContainer.onMoveToFolder
         pagedContainer.reloadPages(apps: displayed, folders: folderContents, iconCache: iconCache, targetPage: targetPage, onCreateFolder: { [weak self] in self?.createFolder(containing: $0) }, onMoveToFolder: { [weak self] app, folder in self?.move(app, to: folder) })
+        for item in pagedContainer.allItems {
+            if let path = item.appRecord?.path { item.setMultiSelected(selectedAppPaths.contains(path)) }
+        }
         pageIndicator.count = pagedContainer.pageCount
         pageIndicator.current = pagedContainer.currentPage
     }
@@ -3863,6 +3960,81 @@ private enum AppSortOrder: Int {
         layout.folders[app.path] = name
         layout.ungroupedPaths.remove(app.path)
         persistLayoutAndRefresh()
+    }
+
+    func prepareSelectionForContextMenu(_ app: AppRecord, itemView: AppItemView) -> [AppRecord] {
+        guard openFolder == nil, !app.path.hasPrefix("chu-folder:") else { return [app] }
+        if !selectedAppPaths.contains(app.path) {
+            selectedAppPaths = [app.path]
+        }
+        updateMultiSelectionAppearance()
+        updateMoreButton()
+        return apps.filter { selectedAppPaths.contains($0.path) && !$0.path.hasPrefix("chu-folder:") }
+    }
+
+    @objc func createGroupFromSelectionMenu() {
+        let selected = apps.filter { selectedAppPaths.contains($0.path) && !$0.path.hasPrefix("chu-folder:") }
+        guard selected.count > 1 else { NSSound.beep(); return }
+        let existingNames = Set(apps.compactMap(\.folder))
+        let alert = NSAlert()
+        alert.messageText = "新建分组"
+        alert.addButton(withTitle: "创建")
+        alert.addButton(withTitle: "取消")
+        let field = NSTextField(string: Layout.nextAvailableFolderName(existingNames: existingNames))
+        field.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !existingNames.contains(name) else { NSSound.beep(); return }
+        for app in selected {
+            layout.folders[app.path] = name
+            layout.ungroupedPaths.remove(app.path)
+        }
+        clearMultiSelection()
+        persistLayoutAndRefresh()
+    }
+
+    @objc func moveSelectionToFolderMenu(_ sender: NSMenuItem) {
+        let folder = (sender.representedObject as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let selected = apps.filter { selectedAppPaths.contains($0.path) && !$0.path.hasPrefix("chu-folder:") }
+        guard !selected.isEmpty else { return }
+        for app in selected {
+            if let folder {
+                layout.folders[app.path] = folder
+                layout.ungroupedPaths.remove(app.path)
+            } else {
+                layout.folders.removeValue(forKey: app.path)
+                if AppScanner.isInsideApplicationDirectory(path: app.path) {
+                    layout.ungroupedPaths.insert(app.path)
+                } else {
+                    layout.ungroupedPaths.remove(app.path)
+                    if let index = apps.firstIndex(where: { $0.path == app.path }) { apps[index].folder = nil }
+                }
+            }
+        }
+        clearMultiSelection()
+        persistLayoutAndRefresh()
+    }
+
+    private func toggleMultiSelection(_ app: AppRecord, in item: AppItemView) {
+        if selectedAppPaths.contains(app.path) { selectedAppPaths.remove(app.path) }
+        else { selectedAppPaths.insert(app.path) }
+        item.setMultiSelected(selectedAppPaths.contains(app.path))
+        updateMoreButton()
+    }
+
+    private func clearMultiSelection() {
+        guard !selectedAppPaths.isEmpty else { return }
+        selectedAppPaths.removeAll()
+        updateMultiSelectionAppearance()
+        updateMoreButton()
+    }
+
+    private func updateMultiSelectionAppearance() {
+        for item in pagedContainer.allItems {
+            guard let path = item.appRecord?.path else { continue }
+            item.setMultiSelected(selectedAppPaths.contains(path))
+        }
     }
 
     private func showRenameFolder(_ name: String, isDissolving: Bool = false) {
