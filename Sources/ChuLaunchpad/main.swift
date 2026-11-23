@@ -2657,7 +2657,9 @@ private enum AppSortOrder: Int {
         }
         folderPages.isInsideFolder = true
         folderPages.onOpenApp = { [weak self] app, itemView in self?.open(app, from: itemView) }
-        folderPages.onBlankAreaClicked = { [weak self] in self?.closeFolder() }
+        // Clicking unused space inside the folder panel should leave the folder open.
+        // The backdrop handler closes it only for clicks outside the panel.
+        folderPages.onBlankAreaClicked = nil
         folderPages.onPageChanged = { [weak self] page in self?.folderIndicator.current = page }
         folderPages.onScrollProgressChanged = { [weak self] progress in self?.folderIndicator.setProgress(progress) }
         folderIndicator.onSelect = { [weak self] page in self?.folderPages.scrollToPage(page) }
@@ -3096,7 +3098,11 @@ private enum AppSortOrder: Int {
                 self.pointerItem = nil
                 let point = self.backgroundView.convert(event.locationInWindow, from: nil)
                 var target = self.backgroundView.hitTest(point)
-                var isControl = false
+                // Treat the whole folder panel as inside content, including empty
+                // space around the grid, so a blank click there cannot dismiss it.
+                let inFolderPanel = self.openFolder != nil &&
+                    self.folderPanel.bounds.contains(self.folderPanel.convert(event.locationInWindow, from: nil))
+                var isControl = inFolderPanel
                 while let view = target {
                     if let item = view as? AppItemView { self.pointerItem = item; isControl = true; break }
                     if view is SearchCapsuleView || view is PageIndicator || view === self.moreButton || view === self.updateNoticeButton { isControl = true; break }
@@ -3837,7 +3843,7 @@ private enum AppSortOrder: Int {
             folderContents = Dictionary(grouping: apps.filter { $0.folder != nil }, by: { $0.folder! })
             folderContents[folder, default: []] = folderContents[folder] ?? []
             loadedFolderItems = nil
-            filterFolder(query: folderSearchCapsule.stringValue)
+            filterFolder(query: folderSearchCapsule.stringValue, targetPage: folderPages.currentPage)
             return
         }
         filter(query: searchCapsule.stringValue, targetPage: pagedContainer.currentPage)
@@ -3955,12 +3961,12 @@ private enum AppSortOrder: Int {
         filter(query: searchCapsule.stringValue, targetPage: pagedContainer.currentPage)
     }
 
-    private func filterFolder(query: String) {
+    private func filterFolder(query: String, targetPage: Int = 0) {
         guard let folder = openFolder, let contents = folderContents[folder] else { return }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let matched = trimmed.isEmpty ? contents : contents.filter { $0.name.localizedStandardContains(trimmed) }
         displayed = matched
-        folderPages.reloadPages(apps: matched, folders: folderContents, iconCache: iconCache, targetPage: 0, onCreateFolder: { [weak self] in self?.createFolder(containing: $0) }, onMoveToFolder: { [weak self] app, folder in self?.move(app, to: folder) })
+        folderPages.reloadPages(apps: matched, folders: folderContents, iconCache: iconCache, targetPage: targetPage, onCreateFolder: { [weak self] in self?.createFolder(containing: $0) }, onMoveToFolder: { [weak self] app, folder in self?.move(app, to: folder) })
         loadedFolderItems = matched
         folderIndicator.count = folderPages.pageCount
         folderIndicator.current = folderPages.currentPage
