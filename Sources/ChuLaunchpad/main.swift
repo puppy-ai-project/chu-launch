@@ -2860,13 +2860,32 @@ private enum AppSortOrder: Int {
         selectionCountLabel.sizeToFit()
         let labelWidth = selectionCountLabel.intrinsicContentSize.width
         let labelHeight: CGFloat = 20
-        selectionCountLabel.frame = NSRect(
-            x: (moreButton.isHidden ? searchCapsule.frame.maxX : moreButton.frame.maxX) + 8,
-            y: moreButton.frame.midY - labelHeight / 2,
-            width: labelWidth,
-            height: labelHeight
-        )
-        selectionCountLabel.isHidden = folderOpen
+        if folderOpen {
+            if selectionCountLabel.superview !== folderPanel {
+                selectionCountLabel.removeFromSuperview()
+                folderPanel.addSubview(selectionCountLabel)
+            }
+            selectionCountLabel.alignment = .right
+            selectionCountLabel.frame = NSRect(
+                x: folderPanel.bounds.maxX - labelWidth - 24,
+                y: folderPanel.bounds.maxY - 36,
+                width: labelWidth,
+                height: labelHeight
+            )
+        } else {
+            if selectionCountLabel.superview !== backgroundView {
+                selectionCountLabel.removeFromSuperview()
+                backgroundView.addSubview(selectionCountLabel)
+            }
+            selectionCountLabel.alignment = .left
+            selectionCountLabel.frame = NSRect(
+                x: moreButton.frame.maxX + 8,
+                y: moreButton.frame.midY - labelHeight / 2,
+                width: labelWidth,
+                height: labelHeight
+            )
+        }
+        selectionCountLabel.isHidden = false
         let hasAvailableUpdate: Bool
         if case .available = updateManager.state {
             hasAvailableUpdate = true
@@ -4236,6 +4255,7 @@ private enum AppSortOrder: Int {
         folderSearchCapsule.frame = NSRect(x: floor((width - searchWidth) / 2), y: height - 92, width: searchWidth, height: 30)
         folderPages.frame = NSRect(x: 20, y: 42, width: width - 40, height: max(1, height - 142))
         folderIndicator.frame = NSRect(x: (width - 200) / 2, y: 10, width: 200, height: 20)
+        if openFolder != nil { updateMoreButton() }
     }
 
     private func closeFolder() {
