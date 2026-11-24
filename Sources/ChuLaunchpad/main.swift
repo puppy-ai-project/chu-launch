@@ -2848,28 +2848,32 @@ private enum AppSortOrder: Int {
     }
 
     private func updateMoreButton() {
-        let controlsHidden = openFolder != nil || !searchCapsule.stringValue.isEmpty
-        moreButton.isHidden = controlsHidden
+        let folderOpen = openFolder != nil
+        let searching = !searchCapsule.stringValue.isEmpty
+        moreButton.isHidden = folderOpen
         let selectedCount = selectedAppPaths.count
-        selectionCountLabel.stringValue = selectedCount > 0 ? "已选择 \(selectedCount) 个应用" : ""
-        selectionCountLabel.setAccessibilityLabel(selectedCount > 0 ? "已选择 \(selectedCount) 个应用" : "")
+        selectionCountLabel.stringValue = selectedCount > 0 ? "已选择 \(selectedCount) 个应用" : "按住 ⌘ 可选中多个应用"
+        selectionCountLabel.textColor = selectedCount > 0
+            ? .white
+            : NSColor.white.withAlphaComponent(0.48)
+        selectionCountLabel.setAccessibilityLabel(selectedCount > 0 ? "已选择 \(selectedCount) 个应用" : "按住 Command 可选中多个应用")
         selectionCountLabel.sizeToFit()
-        let labelWidth = selectedCount > 0 ? selectionCountLabel.intrinsicContentSize.width : 0
+        let labelWidth = selectionCountLabel.intrinsicContentSize.width
         let labelHeight: CGFloat = 20
         selectionCountLabel.frame = NSRect(
-            x: moreButton.frame.maxX + 8,
+            x: (moreButton.isHidden ? searchCapsule.frame.maxX : moreButton.frame.maxX) + 8,
             y: moreButton.frame.midY - labelHeight / 2,
             width: labelWidth,
             height: labelHeight
         )
-        selectionCountLabel.isHidden = controlsHidden || selectedCount == 0
+        selectionCountLabel.isHidden = folderOpen
         let hasAvailableUpdate: Bool
         if case .available = updateManager.state {
             hasAvailableUpdate = true
         } else {
             hasAvailableUpdate = false
         }
-        updateNoticeButton.isHidden = controlsHidden || !hasAvailableUpdate
+        updateNoticeButton.isHidden = folderOpen || searching || !hasAvailableUpdate
         let noticeX = selectionCountLabel.isHidden ? moreButton.frame.maxX + 8 : selectionCountLabel.frame.maxX + 8
         updateNoticeButton.frame.origin.x = noticeX
     }
@@ -3898,7 +3902,6 @@ private enum AppSortOrder: Int {
     private func filter(query: String, targetPage: Int = 0) {
         if transitionInProgress { pendingQuery = query; return }
         if openFolder != nil { pendingQuery = query; closeFolder(); return }
-        clearMultiSelection()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         openFolder = nil
         folderBackdrop.isHidden = true
@@ -3923,6 +3926,7 @@ private enum AppSortOrder: Int {
             displayed = filtered
         }
         reloadDisplayed(targetPage: targetPage)
+        updateMoreButton()
     }
 
     private func scheduleBackdropWarmup() {
@@ -4065,7 +4069,7 @@ private enum AppSortOrder: Int {
 
     private var selectionScopeApps: [AppRecord] {
         if let openFolder { return folderContents[openFolder] ?? [] }
-        return displayed.filter { !$0.path.hasPrefix("chu-folder:") }
+        return apps
     }
 
     private func showRenameFolder(_ name: String, isDissolving: Bool = false) {
