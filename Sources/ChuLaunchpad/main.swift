@@ -166,7 +166,6 @@ enum AnimationHelper {
     private let wallpaperGroup = NSView()
     private let wallpaperImageView = NSImageView()
     private let opaqueBase = NSView()
-    private let fallbackView = NSVisualEffectView()
     private let overlay = NSView()
     private let tint = NSView()
     private var cache: [String: NSImage] = [:]
@@ -197,16 +196,12 @@ enum AnimationHelper {
         opaqueBase.layer?.backgroundColor = NSColor(white: 0.18, alpha: 1).cgColor
         wallpaperImageView.wantsLayer = true
         wallpaperImageView.imageScaling = .scaleAxesIndependently
-        fallbackView.material = .fullScreenUI
-        fallbackView.blendingMode = .behindWindow
-        fallbackView.state = .active
-        fallbackView.wantsLayer = true
         overlay.wantsLayer = true
         overlay.layer?.backgroundColor = color(style.overlayColor).cgColor
         tint.wantsLayer = true
         // A neutral white tint adds no cast; non-white values give a subtle color wash.
         tint.layer?.backgroundColor = color(style.tintColor).cgColor
-        for view in [opaqueBase, fallbackView, wallpaperImageView, overlay, tint] as [NSView] {
+        for view in [opaqueBase, wallpaperImageView, overlay, tint] as [NSView] {
             view.frame = bounds
             view.autoresizingMask = [.width, .height]
             wallpaperGroup.addSubview(view)
@@ -219,7 +214,6 @@ enum AnimationHelper {
         overlay.layer?.backgroundColor = color(style.overlayColor).cgColor
         tint.layer?.backgroundColor = color(style.tintColor).cgColor
         tint.layer?.opacity = style.tintColor.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "#")) == "ffffff" ? 0 : 0.06
-        fallbackView.layer?.opacity = 0
     }
 
     var preparedWallpaper: NSImage? { usingFallback ? nil : wallpaperImageView.image }
@@ -331,6 +325,8 @@ enum AnimationHelper {
 
 // MARK: - 全屏启动器窗口
 @MainActor final class LauncherWindow: NSPanel, @MainActor QLPreviewPanelDataSource {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+
     private var previewURL: NSURL?
 
     func previewApplication(at url: URL) {
@@ -2457,7 +2453,7 @@ private enum AppSortOrder: Int {
     }
 }
 
-@MainActor final class MenuBarEventCaptureView: NSView {
+@MainActor final class DockEdgeCaptureView: NSView {
     var onBlankClick: (() -> Void)?
     override func mouseDown(with event: NSEvent) { onBlankClick?() }
     override func rightMouseDown(with event: NSEvent) { onBlankClick?() }
@@ -2467,10 +2463,10 @@ private enum AppSortOrder: Int {
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: LauncherWindow!
     private let backgroundView = LauncherBackgroundView(frame: .zero)
-    private var menuCover: NSWindow?
-    private var menuCoverImage: NSImageView?
-    private var menuCoverTint: NSView?
-    private var menuSettingsShade: NSView?
+    private var dockEdge: NSWindow?
+    private var dockEdgeImage: NSImageView?
+    private var dockEdgeTint: NSView?
+    private var dockEdgeSettingsShade: NSView?
     private let runningVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
     private var observedReplacement: String?
 
@@ -2606,17 +2602,17 @@ private enum AppSortOrder: Int {
         setupMenu()
 
         let screen = NSScreen.main ?? NSScreen.screens[0]
-        window = LauncherWindow(contentRect: mainWindowFrame(on: screen), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        window = LauncherWindow(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.animationBehavior = .none
-        window.level = .floating
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 1)
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
         window.hidesOnDeactivate = false
-        prepareMenuCover(on: screen)
 
-        // 原生桌面壁纸毛玻璃与磨砂背景（按完整屏幕高度对齐绘制，与顶部 menuCover 无缝衔接）
+
+        // 原生桌面壁纸毛玻璃与磨砂背景
         backgroundView.frame = window.contentView!.bounds
         backgroundView.autoresizingMask = [.width, .height]
         backgroundView.setWallpaperCanvasSize(screen.frame.size)
@@ -3047,8 +3043,8 @@ private enum AppSortOrder: Int {
             self?.dockStatusTimer = nil
             if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 backdrop?.removeFromSuperview()
-                self?.menuSettingsShade?.isHidden = true
-                self?.menuSettingsShade?.alphaValue = 1
+                self?.dockEdgeSettingsShade?.isHidden = true
+                self?.dockEdgeSettingsShade?.alphaValue = 1
                 return
             }
             if let panel, let layer = panel.layer {
@@ -3062,7 +3058,7 @@ private enum AppSortOrder: Int {
                 shrink.isRemovedOnCompletion = false
                 layer.add(shrink, forKey: "settingsDismissScale")
             }
-            let shadeView = self?.menuSettingsShade
+            let shadeView = self?.dockEdgeSettingsShade
             let backdropRef = backdrop
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = 0.14
@@ -3073,8 +3069,8 @@ private enum AppSortOrder: Int {
                 Task { @MainActor in
                     backdropRef?.removeFromSuperview()
                     if self?.settingsPanel == nil {
-                        self?.menuSettingsShade?.isHidden = true
-                        self?.menuSettingsShade?.alphaValue = 1
+                        self?.dockEdgeSettingsShade?.isHidden = true
+                        self?.dockEdgeSettingsShade?.alphaValue = 1
                     }
                 }
             })
@@ -3092,8 +3088,8 @@ private enum AppSortOrder: Int {
 
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             backdrop.alphaValue = 0
-            menuSettingsShade?.alphaValue = 0
-            menuSettingsShade?.isHidden = false
+            dockEdgeSettingsShade?.alphaValue = 0
+            dockEdgeSettingsShade?.isHidden = false
             if let layer = panel.layer {
                 let center = CGPoint(x: panel.bounds.midX, y: panel.bounds.midY)
                 let pop = CABasicAnimation(keyPath: "transform")
@@ -3107,11 +3103,11 @@ private enum AppSortOrder: Int {
                 ctx.duration = 0.18
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 backdrop.animator().alphaValue = 1
-                menuSettingsShade?.animator().alphaValue = 1
+                dockEdgeSettingsShade?.animator().alphaValue = 1
             }
         } else {
-            menuSettingsShade?.alphaValue = 1
-            menuSettingsShade?.isHidden = false
+            dockEdgeSettingsShade?.alphaValue = 1
+            dockEdgeSettingsShade?.isHidden = false
         }
         window.makeFirstResponder(nil)
     }
@@ -3633,7 +3629,7 @@ private enum AppSortOrder: Int {
             if !visible {
                 self.window.orderOut(nil)
                 zoomLayer?.removeAnimation(forKey: "launcher.pageZoom")
-                self.menuCover?.orderOut(nil)
+                self.dockEdge?.orderOut(nil)
                 self.isLaunching = false
             }
             completion?()
@@ -3649,12 +3645,12 @@ private enum AppSortOrder: Int {
             }
             if visible { self.scheduleBackdropWarmup() }
         }
-        if visible { menuCover?.orderFrontRegardless() }
+        if visible { dockEdge?.orderFrontRegardless() }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             window.animator().alphaValue = visible ? 1 : 0
-            menuCover?.animator().alphaValue = visible ? 1 : 0
+            dockEdge?.animator().alphaValue = visible ? 1 : 0
         } completionHandler: {
             Task { @MainActor in finish() }
         }
@@ -3695,23 +3691,11 @@ private enum AppSortOrder: Int {
         updateManager.checkForUpdatesIfNeeded()
     }
 
-    private func menuBarHeight(on screen: NSScreen) -> CGFloat {
-        min(screen.frame.height, max(NSStatusBar.system.thickness, screen.frame.maxY - screen.visibleFrame.maxY))
-    }
-
-    private func mainWindowFrame(on screen: NSScreen) -> NSRect {
-        let frame = screen.frame
-        let height = menuBarHeight(on: screen)
-        // 主窗口上缘停在系统顶部菜单栏正下方，彻底避免触发 macOS 传统无边框全屏自动隐藏菜单栏规则；
-        // 顶部菜单栏区域由 menuCover 在同一坐标系下像素级无缝衔接。
-        return NSRect(x: frame.minX, y: frame.minY, width: frame.width, height: max(100, frame.height - height))
-    }
-
     private func showPrepared(on currentScreen: NSScreen) {
-        let frame = mainWindowFrame(on: currentScreen)
+        let frame = currentScreen.frame
         if window.frame != frame { window.setFrame(frame, display: true) }
         backgroundView.setWallpaperCanvasSize(currentScreen.frame.size)
-        prepareMenuCover(on: currentScreen)
+
 
         let screenWidth = currentScreen.frame.width
         let screenHeight = currentScreen.frame.height
@@ -3740,6 +3724,7 @@ private enum AppSortOrder: Int {
         pagedContainer.frame = NSRect(x: 0, y: gridBottomY, width: screenWidth, height: gridHeight)
 
         layoutFolderPanel()
+        configureDockEdge(on: currentScreen)
         pagedContainer.layoutSubtreeIfNeeded()
         launchingItem?.resetLaunchAnimation()
         launchingItem = nil
@@ -3750,30 +3735,52 @@ private enum AppSortOrder: Int {
         let wasVisible = window.isVisible
         if !wasVisible {
             window.alphaValue = 0
-            menuCover?.alphaValue = 0
-            menuCover?.orderFrontRegardless()
+            dockEdge?.alphaValue = 0
+            dockEdge?.orderFrontRegardless()
             window.makeKeyAndOrderFront(nil)
             if openFolder == nil && settingsPanel == nil { searchCapsule.makeFirstResponder() }
         }
         transition(visible: true)
     }
 
-    // Cover only the menu bar, leaving the main window below the Dock's level.
-    private func prepareMenuCover(on screen: NSScreen) {
+    // The Dock is below the menu bar. Let its edge composite at a lower
+    // level while the launcher and the entire menu area share the main panel.
+    private func configureDockEdge(on screen: NSScreen) {
         let frame = screen.frame
-        let height = menuBarHeight(on: screen)
-        let rect = NSRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height)
-        if menuCover == nil {
+        let visible = screen.visibleFrame
+        let orientation = UserDefaults.standard.persistentDomain(forName: "com.apple.dock")?["orientation"] as? String
+        var upper = NSRect(origin: .zero, size: frame.size)
+        var rect = frame
+        // Preserve an activation edge even when Dock auto-hide is enabled.
+        switch orientation {
+        case "left":
+            rect.size.width = max(2, visible.minX - frame.minX)
+            upper.origin.x += rect.width
+            upper.size.width -= rect.width
+        case "right":
+            rect.size.width = max(2, frame.maxX - visible.maxX)
+            rect.origin.x = frame.maxX - rect.width
+            upper.size.width -= rect.width
+        default:
+            rect.size.height = max(2, visible.minY - frame.minY)
+            upper.origin.y += rect.height
+            upper.size.height -= rect.height
+        }
+        let mask = CALayer()
+        mask.backgroundColor = NSColor.white.cgColor
+        mask.frame = upper
+        backgroundView.layer?.mask = mask
+        if dockEdge == nil {
             let cover = NSWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false)
             cover.animationBehavior = .none
-            cover.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+            cover.level = .floating
             cover.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
             cover.ignoresMouseEvents = false
             cover.isOpaque = false
             cover.backgroundColor = .clear
             cover.hasShadow = false
             cover.hidesOnDeactivate = false
-            let clip = MenuBarEventCaptureView(frame: NSRect(origin: .zero, size: rect.size))
+            let clip = DockEdgeCaptureView(frame: NSRect(origin: .zero, size: rect.size))
             clip.onBlankClick = { [weak self] in
                 guard let self, self.settingsPanel == nil else { return }
                 if self.openFolder != nil { self.closeFolder() } else { self.hide() }
@@ -3794,18 +3801,18 @@ private enum AppSortOrder: Int {
             shade.layer?.backgroundColor = SettingsBackdropView.shade.cgColor
             shade.isHidden = settingsPanel == nil
             clip.addSubview(shade)
-            menuSettingsShade = shade
+            dockEdgeSettingsShade = shade
             cover.contentView = clip
-            menuCover = cover
-            menuCoverImage = image
-            menuCoverTint = tint
+            dockEdge = cover
+            dockEdgeImage = image
+            dockEdgeTint = tint
         }
-        if menuCover?.frame != rect { menuCover?.setFrame(rect, display: true) }
-        menuCoverImage?.frame = NSRect(x: 0, y: height - frame.height, width: frame.width, height: frame.height)
-        menuCoverImage?.image = backgroundView.preparedWallpaper
+        if dockEdge?.frame != rect { dockEdge?.setFrame(rect, display: true) }
+        dockEdgeImage?.frame = NSRect(x: frame.minX - rect.minX, y: frame.minY - rect.minY, width: frame.width, height: frame.height)
+        dockEdgeImage?.image = backgroundView.preparedWallpaper
         let hex = backgroundView.style.overlayColor.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         let rgb = UInt32(hex, radix: 16) ?? 0
-        menuCoverTint?.layer?.backgroundColor = NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: backgroundView.style.overlayOpacity).cgColor
+        dockEdgeTint?.layer?.backgroundColor = NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: backgroundView.style.overlayOpacity).cgColor
     }
 
     @objc private func frontmostAppChanged(_ notification: Notification) {
@@ -3831,7 +3838,7 @@ private enum AppSortOrder: Int {
         guard let screen = target ?? NSScreen.main else { return }
         backgroundView.updateWallpaper(for: screen) { [weak self] in
             guard let self, self.window.isVisible, self.launcherTargetVisible else { return }
-            self.menuCoverImage?.image = self.backgroundView.preparedWallpaper
+            self.dockEdgeImage?.image = self.backgroundView.preparedWallpaper
         }
     }
     #if DEBUG
@@ -3845,7 +3852,7 @@ private enum AppSortOrder: Int {
                     guard !Task.isCancelled else { return }
                     self.backgroundView.setStyle(style)
                     self.refreshVisibleWallpaper()
-                    self.menuCoverTint?.layer?.backgroundColor = NSColor.black.withAlphaComponent(style.overlayOpacity).cgColor
+                    self.dockEdgeTint?.layer?.backgroundColor = NSColor.black.withAlphaComponent(style.overlayOpacity).cgColor
                 }
             }
         }
@@ -4102,14 +4109,14 @@ private enum AppSortOrder: Int {
             panel?.removeFromSuperview()
             self.renamePanel = nil
             if self.settingsPanel == nil {
-                self.menuSettingsShade?.isHidden = true
+                self.dockEdgeSettingsShade?.isHidden = true
             }
             if let newName {
                 if isDissolving { self.dissolveFolder(name) }
                 else { self.move(AppRecord(path: "chu-folder:" + name, name: name), to: "rename:" + newName) }
             }
         }
-        menuSettingsShade?.isHidden = false
+        dockEdgeSettingsShade?.isHidden = false
         backgroundView.addSubview(panel, positioned: .above, relativeTo: folderBackdrop)
         renamePanel = panel
         panel.present()
@@ -4274,7 +4281,7 @@ private enum AppSortOrder: Int {
             guard let self else { return }
             NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: app.path), configuration: NSWorkspace.OpenConfiguration())
             self.window.orderOut(nil)
-            self.menuCover?.orderOut(nil)
+            self.dockEdge?.orderOut(nil)
             self.window.alphaValue = 1.0
             targetItemView?.resetLaunchAnimation()
             self.launchingItem = nil
