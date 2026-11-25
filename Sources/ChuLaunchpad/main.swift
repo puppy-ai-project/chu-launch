@@ -2467,8 +2467,9 @@ private enum AppSortOrder: Int {
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: LauncherWindow!
     private let backgroundView = LauncherBackgroundView(frame: .zero)
-    private var menuCover: NSWindow?
+    private var menuCover: NSPanel?
     private var menuCoverImage: NSImageView?
+    private var menuCoverOverlay: NSView?
     private var menuCoverTint: NSView?
     private var menuSettingsShade: NSView?
     private let runningVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
@@ -3699,11 +3700,19 @@ private enum AppSortOrder: Int {
         min(screen.frame.height, max(NSStatusBar.system.thickness, screen.frame.maxY - screen.visibleFrame.maxY))
     }
 
+    // 顶部覆盖层比系统菜单栏略高一段，以完全盖住系统菜单栏向下投射的阴影（约 6~8pt），
+    // 同时保持在搜索栏（距顶 68pt）之上，与主窗口零重叠无缝拼接。
+    private func menuCoverHeight(on screen: NSScreen) -> CGFloat {
+        let bar = menuBarHeight(on: screen)
+        let shadowPadding = min(20, max(0, 64 - bar))
+        return min(screen.frame.height, bar + shadowPadding)
+    }
+
     private func mainWindowFrame(on screen: NSScreen) -> NSRect {
         let frame = screen.frame
-        let height = menuBarHeight(on: screen)
-        // 主窗口上缘停在系统顶部菜单栏正下方，彻底避免触发 macOS 传统无边框全屏自动隐藏菜单栏规则；
-        // 顶部菜单栏区域由 menuCover 在同一坐标系下像素级无缝衔接。
+        let height = menuCoverHeight(on: screen)
+        // 主窗口上缘停在 menuCover 正下方，既避免触发 macOS 传统无边框全屏自动隐藏菜单栏规则，
+        // 又与顶部 menuCover 在同一坐标系下零重叠无缝衔接，避免透明度过渡时重影。
         return NSRect(x: frame.minX, y: frame.minY, width: frame.width, height: max(100, frame.height - height))
     }
 
@@ -3758,13 +3767,13 @@ private enum AppSortOrder: Int {
         transition(visible: true)
     }
 
-    // Cover only the menu bar, leaving the main window below the Dock's level.
+    // 覆盖顶部菜单栏及其底部阴影，同时保持主窗口位于 Dock 层级之下。
     private func prepareMenuCover(on screen: NSScreen) {
         let frame = screen.frame
-        let height = menuBarHeight(on: screen)
+        let height = menuCoverHeight(on: screen)
         let rect = NSRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height)
         if menuCover == nil {
-            let cover = NSWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false)
+            let cover = NSPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             cover.animationBehavior = .none
             cover.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
             cover.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
@@ -3780,10 +3789,15 @@ private enum AppSortOrder: Int {
             }
             clip.wantsLayer = true
             clip.layer?.masksToBounds = true
-            clip.layer?.backgroundColor = NSColor(white: 0.25, alpha: 1).cgColor
+            clip.layer?.backgroundColor = NSColor(white: 0.18, alpha: 1).cgColor
             let image = NSImageView()
+            image.wantsLayer = true
             image.imageScaling = .scaleAxesIndependently
             clip.addSubview(image)
+            let overlay = NSView(frame: clip.bounds)
+            overlay.wantsLayer = true
+            overlay.autoresizingMask = [.width, .height]
+            clip.addSubview(overlay)
             let tint = NSView(frame: clip.bounds)
             tint.wantsLayer = true
             tint.autoresizingMask = [.width, .height]
@@ -3798,14 +3812,26 @@ private enum AppSortOrder: Int {
             cover.contentView = clip
             menuCover = cover
             menuCoverImage = image
+            menuCoverOverlay = overlay
             menuCoverTint = tint
         }
         if menuCover?.frame != rect { menuCover?.setFrame(rect, display: true) }
         menuCoverImage?.frame = NSRect(x: 0, y: height - frame.height, width: frame.width, height: frame.height)
         menuCoverImage?.image = backgroundView.preparedWallpaper
-        let hex = backgroundView.style.overlayColor.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-        let rgb = UInt32(hex, radix: 16) ?? 0
-        menuCoverTint?.layer?.backgroundColor = NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: backgroundView.style.overlayOpacity).cgColor
+        applyMenuCoverStyle()
+    }
+
+    private func applyMenuCoverStyle() {
+        let style = backgroundView.style
+        func hexColor(_ hex: String) -> CGColor {
+            let text = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+            guard text.count == 6, let rgb = UInt32(text, radix: 16) else { return NSColor.clear.cgColor }
+            return NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: 1).cgColor
+        }
+        menuCoverOverlay?.layer?.backgroundColor = hexColor(style.overlayColor)
+        menuCoverOverlay?.layer?.opacity = Float(style.overlayOpacity)
+        menuCoverTint?.layer?.backgroundColor = hexColor(style.tintColor)
+        menuCoverTint?.layer?.opacity = style.tintColor.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "#")) == "ffffff" ? 0 : 0.06
     }
 
     @objc private func frontmostAppChanged(_ notification: Notification) {
@@ -3845,7 +3871,7 @@ private enum AppSortOrder: Int {
                     guard !Task.isCancelled else { return }
                     self.backgroundView.setStyle(style)
                     self.refreshVisibleWallpaper()
-                    self.menuCoverTint?.layer?.backgroundColor = NSColor.black.withAlphaComponent(style.overlayOpacity).cgColor
+                    self.applyMenuCoverStyle()
                 }
             }
         }
