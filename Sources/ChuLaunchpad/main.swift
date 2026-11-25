@@ -166,7 +166,6 @@ enum AnimationHelper {
     private let wallpaperGroup = NSView()
     private let wallpaperImageView = NSImageView()
     private let opaqueBase = NSView()
-    private let fallbackView = NSVisualEffectView()
     private let overlay = NSView()
     private let tint = NSView()
     private var cache: [String: NSImage] = [:]
@@ -197,16 +196,12 @@ enum AnimationHelper {
         opaqueBase.layer?.backgroundColor = NSColor(white: 0.18, alpha: 1).cgColor
         wallpaperImageView.wantsLayer = true
         wallpaperImageView.imageScaling = .scaleAxesIndependently
-        fallbackView.material = .fullScreenUI
-        fallbackView.blendingMode = .behindWindow
-        fallbackView.state = .active
-        fallbackView.wantsLayer = true
         overlay.wantsLayer = true
         overlay.layer?.backgroundColor = color(style.overlayColor).cgColor
         tint.wantsLayer = true
         // A neutral white tint adds no cast; non-white values give a subtle color wash.
         tint.layer?.backgroundColor = color(style.tintColor).cgColor
-        for view in [opaqueBase, fallbackView, wallpaperImageView, overlay, tint] as [NSView] {
+        for view in [opaqueBase, wallpaperImageView, overlay, tint] as [NSView] {
             view.frame = bounds
             view.autoresizingMask = [.width, .height]
             wallpaperGroup.addSubview(view)
@@ -219,7 +214,6 @@ enum AnimationHelper {
         overlay.layer?.backgroundColor = color(style.overlayColor).cgColor
         tint.layer?.backgroundColor = color(style.tintColor).cgColor
         tint.layer?.opacity = style.tintColor.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "#")) == "ffffff" ? 0 : 0.06
-        fallbackView.layer?.opacity = 0
     }
 
     var preparedWallpaper: NSImage? { usingFallback ? nil : wallpaperImageView.image }
@@ -331,6 +325,8 @@ enum AnimationHelper {
 
 // MARK: - 全屏启动器窗口
 @MainActor final class LauncherWindow: NSPanel, @MainActor QLPreviewPanelDataSource {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+
     private var previewURL: NSURL?
 
     func previewApplication(at url: URL) {
