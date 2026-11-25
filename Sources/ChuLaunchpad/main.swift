@@ -291,7 +291,10 @@ enum AnimationHelper {
         let fill = (options[.fillColor] as? NSColor)?.usingColorSpace(.sRGB) ?? NSColor(white: 0.18, alpha: 1).usingColorSpace(.sRGB)!
         let placement = WallpaperPlacement(
             scaling: (options[.imageScaling] as? NSNumber)?.uintValue ?? NSImageScaling.scaleProportionallyUpOrDown.rawValue,
-            clip: (options[.allowClipping] as? NSNumber)?.boolValue ?? false,
+            // macOS returns an empty options dictionary for its default "Fill Screen" mode.
+            // Treat a missing clipping option as fill/crop so aspect-ratio differences do not
+            // become solid-color bars when blurRadius is zero.
+            clip: (options[.allowClipping] as? NSNumber)?.boolValue ?? true,
             red: fill.redComponent,
             green: fill.greenComponent,
             blue: fill.blueComponent
@@ -360,7 +363,13 @@ enum AnimationHelper {
         let scale = screen.backingScaleFactor
         let options = NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:]
         let fill = (options[.fillColor] as? NSColor)?.usingColorSpace(.sRGB) ?? NSColor(white: 0.18, alpha: 1).usingColorSpace(.sRGB)!
-        let placement = WallpaperPlacement(scaling: (options[.imageScaling] as? NSNumber)?.uintValue ?? NSImageScaling.scaleProportionallyUpOrDown.rawValue, clip: (options[.allowClipping] as? NSNumber)?.boolValue ?? false, red: fill.redComponent, green: fill.greenComponent, blue: fill.blueComponent)
+        let placement = WallpaperPlacement(
+            scaling: (options[.imageScaling] as? NSNumber)?.uintValue ?? NSImageScaling.scaleProportionallyUpOrDown.rawValue,
+            clip: (options[.allowClipping] as? NSNumber)?.boolValue ?? true,
+            red: fill.redComponent,
+            green: fill.greenComponent,
+            blue: fill.blueComponent
+        )
         let style = self.style
         refreshTask?.cancel()
         refreshTask = Task {
