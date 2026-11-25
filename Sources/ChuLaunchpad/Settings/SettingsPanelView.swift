@@ -813,6 +813,10 @@ enum SettingsTab {
     private let dockCard = FlippedView()
     private let dockSwitch = NSSwitch()
     private let dockStatusLabel = NSTextField(labelWithString: "正在检查…")
+    private let blurCard = FlippedView()
+    private let blurSlider = NSSlider(value: 33, minValue: 0, maxValue: 100, target: nil, action: nil)
+    private let blurValueLabel = NSTextField(labelWithString: "33")
+    private let resetBlurButton: SettingsActionButton
 
     // MARK: 关于页组件
     private let aboutPage = FlippedView()
@@ -860,6 +864,7 @@ enum SettingsTab {
     var onRecordingStateChanged: ((Bool) -> Void)?
     var onLaunchAtLoginChanged: ((Bool) -> Void)?
     var onDockPinChanged: ((Bool) -> Void)?
+    var onBlurRadiusChanged: ((Double) -> Void)?
     var onAboutSelected: (() -> Void)?
 
     private var dragStartMouseInParent: NSPoint?
@@ -889,6 +894,13 @@ enum SettingsTab {
             style: .circleIcon,
             symbolName: "arrow.counterclockwise",
             accessibilityLabel: "恢复默认快捷键",
+            pointSize: 11.5
+        )
+        self.resetBlurButton = SettingsActionButton(
+            frame: NSRect(x: 396, y: 20, width: 28, height: 28),
+            style: .circleIcon,
+            symbolName: "arrow.counterclockwise",
+            accessibilityLabel: "恢复默认模糊度",
             pointSize: 11.5
         )
         self.checkButton = SettingsActionButton(
@@ -1143,6 +1155,55 @@ enum SettingsTab {
         dockSwitch.isEnabled = false
         dockCard.addSubview(dockSwitch)
 
+        // 卡片 4：背景毛玻璃模糊度
+        blurCard.frame = NSRect(x: 24, y: 412, width: 440, height: 96)
+        blurCard.wantsLayer = true
+        blurCard.layer?.cornerRadius = 14
+        blurCard.layer?.borderWidth = 1
+        generalPage.addSubview(blurCard)
+
+        let blurBadge = GradientBadgeView(
+            frame: NSRect(x: 18, y: 18, width: 32, height: 32),
+            symbolName: "aqi.medium",
+            symbolPointSize: 14.5,
+            colors: [
+                NSColor(srgbRed: 0.25, green: 0.68, blue: 0.96, alpha: 1),
+                NSColor(srgbRed: 0.42, green: 0.45, blue: 0.96, alpha: 1)
+            ],
+            cornerRadius: 8
+        )
+        blurCard.addSubview(blurBadge)
+
+        makeLabel("背景毛玻璃模糊度", x: 62, y: 15, size: 14.5, weight: .semibold, color: .labelColor, in: blurCard)
+        makeLabel("拖动滑块实时调整壁纸模糊程度", x: 62, y: 36, size: 11.5, weight: .regular, color: .tertiaryLabelColor, in: blurCard)
+
+        blurValueLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        blurValueLabel.textColor = .secondaryLabelColor
+        blurValueLabel.alignment = .right
+        blurValueLabel.frame = NSRect(x: 342, y: 25, width: 46, height: 18)
+        blurCard.addSubview(blurValueLabel)
+
+        resetBlurButton.toolTip = "恢复默认模糊度 (33)"
+        resetBlurButton.onTap = { [weak self] in
+            guard let self else { return }
+            self.setBlurRadius(33)
+            self.onBlurRadiusChanged?(33)
+        }
+        blurCard.addSubview(resetBlurButton)
+
+        makeLabel("清晰", x: 18, y: 65, size: 11, weight: .regular, color: .tertiaryLabelColor, in: blurCard)
+        let softLabel = makeLabel("柔和", x: 396, y: 65, size: 11, weight: .regular, color: .tertiaryLabelColor, in: blurCard)
+        softLabel.alignment = .right
+        softLabel.frame = NSRect(x: 394, y: 65, width: 30, height: 16)
+
+        blurSlider.minValue = 0
+        blurSlider.maxValue = 100
+        blurSlider.isContinuous = true
+        blurSlider.controlSize = .small
+        blurSlider.target = self
+        blurSlider.action = #selector(blurSliderChanged)
+        blurSlider.frame = NSRect(x: 52, y: 60, width: 336, height: 24)
+        blurCard.addSubview(blurSlider)
     }
 
     // MARK: - 构建“关于”页面
@@ -1460,6 +1521,21 @@ enum SettingsTab {
         dockStatusLabel.toolTip = error
     }
 
+    func setBlurRadius(_ radius: Double) {
+        let clamped = min(max(radius, blurSlider.minValue), blurSlider.maxValue)
+        blurSlider.doubleValue = clamped
+        let rounded = Int(clamped.rounded())
+        blurValueLabel.stringValue = "\(rounded)"
+        resetBlurButton.isEnabled = rounded != 33
+    }
+
+    @objc private func blurSliderChanged(_ sender: NSSlider) {
+        let rounded = sender.doubleValue.rounded()
+        blurValueLabel.stringValue = "\(Int(rounded))"
+        resetBlurButton.isEnabled = Int(rounded) != 33
+        onBlurRadiusChanged?(rounded)
+    }
+
     @objc private func dockSwitchToggled() {
         dockSwitch.isEnabled = false
         dockStatusLabel.stringValue = "正在更新…"
@@ -1506,7 +1582,7 @@ enum SettingsTab {
             ? NSColor.white.withAlphaComponent(0.09)
             : NSColor.black.withAlphaComponent(0.07)
 
-        for card in [hotKeyCard, loginCard, dockCard, productCard, updatesCard] {
+        for card in [hotKeyCard, loginCard, dockCard, blurCard, productCard, updatesCard] {
             card.layer?.backgroundColor = cardFill.cgColor
             card.layer?.borderColor = cardBorder.cgColor
         }
@@ -1535,6 +1611,7 @@ enum SettingsTab {
         aboutTabButton.updateColors()
         hotKeyRecorder.updateColors()
         resetHotKeyButton.updateAppearanceColors()
+        resetBlurButton.updateAppearanceColors()
         checkButton.updateAppearanceColors()
         primaryActionButton.updateAppearanceColors()
         revealFileButton.updateAppearanceColors()
@@ -1815,7 +1892,11 @@ enum SettingsTab {
         guard let hit = super.hitTest(point) else { return nil }
         var cursor: NSView? = hit
         while let current = cursor, current !== self {
-            if current is NSControl || current is InteractiveCardView || current is SidebarTabButton || current is HotKeyRecorderControl {
+            // 原生 NSSlider / NSSwitch 内部含子视图（macOS 液态玻璃控件），必须原样返回 hit 才能正常响应拖动
+            if current is NSSlider || current is NSSwitch {
+                return hit
+            }
+            if current is SettingsActionButton || current is InteractiveCardView || current is SidebarTabButton || current is HotKeyRecorderControl {
                 return current
             }
             cursor = current.superview
@@ -1826,6 +1907,11 @@ enum SettingsTab {
     override func mouseDown(with event: NSEvent) {
         // 点击空白处退出快捷键录制态
         cancelHotKeyRecording()
+        // 避免点击滑块附近误触发整个设置面板拖动
+        let pointInBlurCard = blurCard.convert(event.locationInWindow, from: nil)
+        if !generalPage.isHidden && blurSlider.frame.insetBy(dx: -8, dy: -6).contains(pointInBlurCard) {
+            return
+        }
         guard let parent = superview else { return }
         dragStartMouseInParent = parent.convert(event.locationInWindow, from: nil)
         dragStartOrigin = frame.origin

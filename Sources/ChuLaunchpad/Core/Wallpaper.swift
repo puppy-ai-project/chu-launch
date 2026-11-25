@@ -3,7 +3,12 @@ import CoreImage
 
 // Background parameters can be overridden in Application Support/ChuLaunchpad/background.json.
 struct ChuBackgroundStyle: Codable, Sendable {
-    var blurRadius: Double = 33
+    static let defaultBlurRadius: Double = 33
+    static var defaultURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ChuLaunchpad/background.json")
+    }
+
+    var blurRadius: Double = ChuBackgroundStyle.defaultBlurRadius
     var brightness: Double = -0.22
     var saturation: Double = 1.32
     var overlayColor: String = "000000"
@@ -12,13 +17,19 @@ struct ChuBackgroundStyle: Codable, Sendable {
     var hue: Double? = nil
     var animationDuration: Double = 0.28
 
-    static func load() -> ChuBackgroundStyle {
-        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ChuLaunchpad/background.json")
+    static func load(from url: URL = defaultURL) -> ChuBackgroundStyle {
         guard let data = try? Data(contentsOf: url), let style = try? JSONDecoder().decode(ChuBackgroundStyle.self, from: data),
               (0...150).contains(style.blurRadius), (-1...1).contains(style.brightness),
               (0...2).contains(style.saturation), (-3.1416...3.1416).contains(style.hue ?? 0), (0...1).contains(style.overlayOpacity),
               (0.05...2).contains(style.animationDuration) else { return ChuBackgroundStyle() }
         return style
+    }
+
+    func save(to url: URL = defaultURL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(self).write(to: url, options: .atomic)
     }
 }
 
@@ -33,9 +44,33 @@ struct WallpaperPlacement: Sendable {
 
 enum WallpaperBlurRenderer {
     static let context = CIContext(options: [.useSoftwareRenderer: false])
-    static func generate(url: URL, screenSize: CGSize, scaleFactor: CGFloat, placement: WallpaperPlacement, style: ChuBackgroundStyle) -> CGImage? {
-        guard let input = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]), !input.extent.isEmpty else { return nil }
-        let width = min(2560, max(1, screenSize.width * scaleFactor))
+    private final class SourceCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var key: String?
+        private var image: CIImage?
+
+        func load(url: URL) -> CIImage? {
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            let cacheKey = "\(url.path)|\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)|\(values?.fileSize ?? 0)"
+            lock.lock()
+            if key == cacheKey, let cached = image {
+                lock.unlock()
+                return cached
+            }
+            lock.unlock()
+            guard let decoded = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]), !decoded.extent.isEmpty else { return nil }
+            lock.lock()
+            key = cacheKey
+            image = decoded
+            lock.unlock()
+            return decoded
+        }
+    }
+    private static let sourceCache = SourceCache()
+
+    static func generate(url: URL, screenSize: CGSize, scaleFactor: CGFloat, placement: WallpaperPlacement, style: ChuBackgroundStyle, maxWidth: CGFloat = 2560) -> CGImage? {
+        guard let input = sourceCache.load(url: url) else { return nil }
+        let width = min(maxWidth, max(1, screenSize.width * scaleFactor))
         let height = width * screenSize.height / max(1, screenSize.width)
         let extent = CGRect(x: 0, y: 0, width: width, height: height)
         let source = input.transformed(by: CGAffineTransform(translationX: -input.extent.minX, y: -input.extent.minY))

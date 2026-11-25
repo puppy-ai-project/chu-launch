@@ -24,6 +24,12 @@ import CoreImage
         precondition(pixel(20, 50, 0) > 200 && pixel(80, 50, 2) > 200, "wallpaper colors and positions are preserved")
         precondition(pixel(50, 5, 1) > 200 && pixel(50, 5, 3) == 255, "fit margins use the opaque desktop fill color")
         precondition(WallpaperBlurRenderer.generate(url: directory.appendingPathComponent("missing"), screenSize: CGSize(width: 100, height: 100), scaleFactor: 1, placement: placement, style: style) == nil)
+        let styleURL = directory.appendingPathComponent("background.json")
+        var savedStyle = ChuBackgroundStyle()
+        savedStyle.blurRadius = 64
+        try savedStyle.save(to: styleURL)
+        let reloadedStyle = ChuBackgroundStyle.load(from: styleURL)
+        precondition(reloadedStyle.blurRadius == 64, "blur radius persists across save/load")
         print("Background regression checks passed")
     }
 }

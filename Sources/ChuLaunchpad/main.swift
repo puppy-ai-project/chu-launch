@@ -175,6 +175,21 @@ enum AnimationHelper {
     private var currentKey: String?
     private var refreshTask: Task<Void, Never>?
     private var wallpaperCanvasSize: NSSize?
+    private final class LiveBlurVersionBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var version: UInt64 = 0
+        func next() -> UInt64 {
+            lock.lock(); defer { lock.unlock() }
+            version &+= 1
+            return version
+        }
+        func isCurrent(_ v: UInt64) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            return version == v
+        }
+    }
+    private let liveBlurQueue = DispatchQueue(label: "com.withqq.chu-launchpad.blur-live", qos: .userInteractive)
+    private let liveBlurVersionBox = LiveBlurVersionBox()
 
     override init(frame: NSRect) { super.init(frame: frame); setup() }
     required init?(coder: NSCoder) { super.init(coder: coder); setup() }
@@ -237,13 +252,15 @@ enum AnimationHelper {
         }
     }
 
-    private func displayWallpaper(_ image: NSImage?) {
-        if window?.isVisible == true, wallpaperImageView.image !== image,
+    private func displayWallpaper(_ image: NSImage?, animated: Bool = true) {
+        if animated, window?.isVisible == true, wallpaperImageView.image !== image,
            !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let layer = wallpaperImageView.layer {
             let fade = CATransition()
             fade.type = .fade
             fade.duration = 0.25
             layer.add(fade, forKey: "wallpaperChange")
+        } else {
+            wallpaperImageView.layer?.removeAnimation(forKey: "wallpaperChange")
         }
         wallpaperImageView.image = image
         usingFallback = image == nil
@@ -255,6 +272,61 @@ enum AnimationHelper {
         applyStyle()
         cache.removeAll()
         currentKey = nil
+    }
+
+    /// 拖动模糊度滑块时的实时渲染通道：使用独立高优先级队列 + CFRunLoop commonModes 回主线程，
+    /// 确保在 NSSlider 模态拖拽循环中也能逐帧实时刷新画面。
+    func renderStyleLive(_ newStyle: ChuBackgroundStyle, on screen: NSScreen, maxWidth: CGFloat, onRendered: @escaping @MainActor (NSImage) -> Void) {
+        style = newStyle
+        applyStyle()
+        cache.removeAll()
+        currentKey = nil
+        refreshTask?.cancel()
+
+        guard let url = NSWorkspace.shared.desktopImageURL(for: screen) else { return }
+        let screenID = screenKey(screen)
+        let size = screen.frame.size
+        let scale = screen.backingScaleFactor
+        let options = NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:]
+        let fill = (options[.fillColor] as? NSColor)?.usingColorSpace(.sRGB) ?? NSColor(white: 0.18, alpha: 1).usingColorSpace(.sRGB)!
+        let placement = WallpaperPlacement(
+            scaling: (options[.imageScaling] as? NSNumber)?.uintValue ?? NSImageScaling.scaleProportionallyUpOrDown.rawValue,
+            clip: (options[.allowClipping] as? NSNumber)?.boolValue ?? false,
+            red: fill.redComponent,
+            green: fill.greenComponent,
+            blue: fill.blueComponent
+        )
+
+        let versionBox = liveBlurVersionBox
+        let version = versionBox.next()
+
+        liveBlurQueue.async { [weak self] in
+            guard versionBox.isCurrent(version) else { return }
+
+            guard let cgImage = WallpaperBlurRenderer.generate(
+                url: url,
+                screenSize: size,
+                scaleFactor: scale,
+                placement: placement,
+                style: newStyle,
+                maxWidth: maxWidth
+            ) else { return }
+
+            guard versionBox.isCurrent(version) else { return }
+
+            let mainRunLoop = CFRunLoopGetMain()
+            CFRunLoopPerformBlock(mainRunLoop, CFRunLoopMode.commonModes.rawValue) {
+                MainActor.assumeIsolated { [weak self] in
+                    guard let self, versionBox.isCurrent(version) else { return }
+                    let result = NSImage(cgImage: cgImage, size: size)
+                    self.lastByScreen[screenID] = result
+                    self.displayWallpaper(result, animated: false)
+                    onRendered(result)
+                    CATransaction.flush()
+                }
+            }
+            CFRunLoopWakeUp(mainRunLoop)
+        }
     }
 
     var wallpaperURLChanged: ((URL?) -> Void)?
@@ -273,7 +345,7 @@ enum AnimationHelper {
         return true
     }
 
-    func updateWallpaper(for screen: NSScreen, completion: (@MainActor () -> Void)? = nil) {
+    func updateWallpaper(for screen: NSScreen, animated: Bool = true, completion: (@MainActor () -> Void)? = nil) {
         wallpaperGeneration += 1
         let generation = wallpaperGeneration
         let screenID = screenKey(screen)
@@ -281,7 +353,7 @@ enum AnimationHelper {
         wallpaperURLChanged?(wallpaperURL)
         guard let url = wallpaperURL else {
             currentKey = nil
-            displayWallpaper(lastByScreen[screenID])
+            displayWallpaper(lastByScreen[screenID], animated: animated)
             completion?(); return
         }
         let size = screen.frame.size
@@ -299,10 +371,10 @@ enum AnimationHelper {
             guard !Task.isCancelled, generation == wallpaperGeneration else { return }
             if key == currentKey { completion?(); return }
             if let image = cache[key] {
-                currentKey = key; displayWallpaper(image)
+                currentKey = key; displayWallpaper(image, animated: animated)
                 lastByScreen[screenID] = image; completion?(); return
             }
-            let image = await Task.detached(priority: .utility) {
+            let image = await Task.detached(priority: .userInitiated) {
                 WallpaperBlurRenderer.generate(url: url, screenSize: size, scaleFactor: scale, placement: placement, style: style)
             }.value
             guard !Task.isCancelled, generation == wallpaperGeneration else { return }
@@ -312,9 +384,9 @@ enum AnimationHelper {
                 cache[key] = result
                 lastByScreen[screenID] = result
                 currentKey = key
-                displayWallpaper(result)
+                displayWallpaper(result, animated: animated)
             } else {
-                displayWallpaper(lastByScreen[screenID])
+                displayWallpaper(lastByScreen[screenID], animated: animated)
                 currentKey = nil
             }
             completion?()
@@ -2507,6 +2579,7 @@ private enum AppSortOrder: Int {
     private let searchCapsule = SearchCapsuleView(frame: .zero)
     private let moreMenu = NSMenu()
     private var settingsPanel: SettingsPanelView?
+    private var blurFinalizeTimer: Timer?
     private var renamePanel: FolderRenameView?
     private var dockStatusTimer: Timer?
     private var dockStatusBusy = false
@@ -2988,19 +3061,21 @@ private enum AppSortOrder: Int {
         if let existing = settingsPanel {
             existing.selectTab(initialTab)
             existing.setLaunchAtLogin(enabled: LaunchAtLoginManager.isEnabled())
+            existing.setBlurRadius(backgroundView.style.blurRadius)
             refreshDockStatus()
             window.makeFirstResponder(nil)
             return
         }
 
         let bounds = backgroundView.bounds
-        let panelHeight: CGFloat = 470
+        let panelHeight: CGFloat = 576
         let panel = SettingsPanelView(frame: NSRect(x: floor(bounds.midX - 340), y: floor(bounds.midY - panelHeight / 2), width: 680, height: panelHeight))
         panel.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
         panel.onAboutSelected = { [weak self] in self?.updateManager.checkForUpdatesIfNeeded() }
         panel.selectTab(initialTab)
         panel.setHotKeyStatus(hotKeyManager.lastStatus)
         panel.setLaunchAtLogin(enabled: LaunchAtLoginManager.isEnabled())
+        panel.setBlurRadius(backgroundView.style.blurRadius)
         panel.applyUpdateState(updateManager.state)
 
         panel.onCheckUpdates = { [weak self] in self?.updateManager.checkForUpdates() }
@@ -3023,6 +3098,9 @@ private enum AppSortOrder: Int {
             self.settingsPanel?.setHotKeyStatus(status)
         }
         panel.onDockPinChanged = { [weak self] enabled in self?.changeDockPin(enabled) }
+        panel.onBlurRadiusChanged = { [weak self] radius in
+            self?.applyBlurRadiusLive(radius)
+        }
         panel.onLaunchAtLoginChanged = { [weak self] enabled in
             do {
                 try LaunchAtLoginManager.setEnabled(enabled)
@@ -4015,6 +4093,43 @@ private enum AppSortOrder: Int {
             self.showPrepared(on: screen)
         }
     }
+    private func applyBlurRadiusLive(_ radius: Double) {
+        var style = backgroundView.style
+        style.blurRadius = radius
+        applyMenuCoverStyle()
+
+        let target = window.isVisible ? window.screen : NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+        guard let screen = target ?? NSScreen.main else { return }
+
+        // 拖动期间用 960px 实时预览（单帧仅 ~5ms，且通过 commonModes 在拖拽中即时上屏）
+        backgroundView.renderStyleLive(style, on: screen, maxWidth: 960) { [weak self] image in
+            guard let self, self.window.isVisible, self.launcherTargetVisible else { return }
+            self.menuCoverImage?.image = image
+        }
+
+        // 停止拖动 180ms 后补一帧全分辨率清晰渲染并落盘保存
+        blurFinalizeTimer?.invalidate()
+        let finalStyle = style
+        let timer = Timer(timeInterval: 0.18, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.blurFinalizeTimer = nil
+                let targetScreen = (self.window.isVisible ? self.window.screen : NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main
+                if let targetScreen {
+                    self.backgroundView.renderStyleLive(finalStyle, on: targetScreen, maxWidth: 2560) { [weak self] image in
+                        guard let self, self.window.isVisible, self.launcherTargetVisible else { return }
+                        self.menuCoverImage?.image = image
+                    }
+                }
+                self.storageQueue.async {
+                    try? finalStyle.save()
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        blurFinalizeTimer = timer
+    }
+
     private func refreshVisibleWallpaper() {
         guard !transitionInProgress, window.isVisible || !launcherTargetVisible else { return }
         let target = window.isVisible ? window.screen : NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
