@@ -4327,11 +4327,9 @@ private enum AppSortOrder: Int {
 
     func prepareSelectionForContextMenu(_ app: AppRecord, itemView: AppItemView) -> [AppRecord] {
         guard !app.path.hasPrefix("chu-folder:") else { return [app] }
-        if !selectedAppPaths.contains(app.path) {
-            selectedAppPaths = [app.path]
-        }
-        updateMultiSelectionAppearance()
-        updateMoreButton()
+        // A context click is not a selection gesture. Only expose bulk actions
+        // when the clicked app was already part of the explicit Command selection.
+        guard selectedAppPaths.contains(app.path) else { return [app] }
         return selectionScopeApps.filter { selectedAppPaths.contains($0.path) && !$0.path.hasPrefix("chu-folder:") }
     }
 
