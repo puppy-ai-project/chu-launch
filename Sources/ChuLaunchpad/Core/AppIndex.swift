@@ -124,9 +124,15 @@ struct Layout: Codable, Sendable {
         return "\(baseName) \(suffix)"
     }
 
-    /// 将拖拽应用合并到目标应用或已有目录中；返回最终使用的目录名
+    /// 将单个拖拽应用合并到目标应用或已有目录中；返回最终使用的目录名
     @discardableResult
     mutating func merge(draggedApp: AppRecord, onto targetApp: AppRecord, allApps: [AppRecord]) -> String {
+        merge(draggedApps: [draggedApp], onto: targetApp, allApps: allApps)
+    }
+
+    /// 将多个拖拽应用批量合并到目标应用或已有目录中；返回最终使用的目录名
+    @discardableResult
+    mutating func merge(draggedApps: [AppRecord], onto targetApp: AppRecord, allApps: [AppRecord]) -> String {
         let folderName: String
         if targetApp.path.hasPrefix("chu-folder:") {
             folderName = targetApp.name
@@ -140,8 +146,10 @@ struct Layout: Codable, Sendable {
             folderName = Self.nextAvailableFolderName(existingNames: existingNames)
             folders[targetApp.path] = folderName
         }
-        folders[draggedApp.path] = folderName
-        ungroupedPaths.remove(draggedApp.path)
+        for app in draggedApps where !app.path.hasPrefix("chu-folder:") {
+            folders[app.path] = folderName
+            ungroupedPaths.remove(app.path)
+        }
         ungroupedPaths.remove(targetApp.path)
         return folderName
     }

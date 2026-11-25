@@ -592,7 +592,7 @@ enum AnimationHelper {
         titleLabel.frame = NSRect(x: 24, y: 98, width: Self.cardWidth - 48, height: 22)
         flippedShell.addSubview(titleLabel)
 
-        subtitleLabel.stringValue = isDissolving ? "输入“确认”后解散“\(name)”，应用将移回一级" : "输入新的分组名称，按回车确认"
+        subtitleLabel.stringValue = isDissolving ? "输入数字 1 后解散“\(name)”，应用将移回一级" : "输入新的分组名称，按回车确认"
         subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
         subtitleLabel.textColor = .secondaryLabelColor
         subtitleLabel.alignment = .center
@@ -614,6 +614,7 @@ enum AnimationHelper {
         field.alignment = .left
         field.maximumNumberOfLines = 1
         field.lineBreakMode = .byTruncatingTail
+        field.placeholderString = isDissolving ? "输入 1 确认解散" : nil
         field.delegate = self
         let fieldHeight: CGFloat = 20
         field.frame = NSRect(x: 12, y: floor((38 - fieldHeight) / 2), width: Self.cardWidth - 48 - 44, height: fieldHeight)
@@ -755,7 +756,7 @@ enum AnimationHelper {
 
         if isDissolving {
             errorLabel.isHidden = true
-            confirmButton.isEnabled = raw == "确认"
+            confirmButton.isEnabled = trimmed == "1"
         } else if trimmed.isEmpty {
             errorLabel.isHidden = true
             confirmButton.isEnabled = false
@@ -793,7 +794,7 @@ enum AnimationHelper {
     @objc func cancel() { dismiss(result: nil) }
     @objc func confirm() {
         let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isDissolving ? field.stringValue == "确认" : (!trimmed.isEmpty && !(trimmed != originalName && existingNames.contains(trimmed))) else {
+        guard isDissolving ? trimmed == "1" : (!trimmed.isEmpty && !(trimmed != originalName && existingNames.contains(trimmed))) else {
             NSSound.beep()
             return
         }
@@ -1770,12 +1771,12 @@ enum AnimationHelper {
     }
 
     /// 命中当前页上可合并为目录的目标应用/目录视图（同时检测指针位置与拖拽图标中心）
-    func hitTestDropTarget(atWindowPoints points: [NSPoint], excludingPath: String) -> AppItemView? {
+    func hitTestDropTarget(atWindowPoints points: [NSPoint], excludingPaths: Set<String>) -> AppItemView? {
         guard pageViews.indices.contains(currentPage), let referencePoint = points.first else { return nil }
         var bestMatch: AppItemView?
         var bestDistance = CGFloat.greatestFiniteMagnitude
         for itemView in pageViews[currentPage].items {
-            guard let record = itemView.appRecord, record.path != excludingPath else { continue }
+            guard let record = itemView.appRecord, !excludingPaths.contains(record.path) else { continue }
             itemView.layoutSubtreeIfNeeded()
             let iconFrame = itemView.iconFrameInSelf
             let hitRect = iconFrame.insetBy(dx: -iconFrame.width * 0.08, dy: -iconFrame.height * 0.08)
@@ -2552,8 +2553,11 @@ private enum AppSortOrder: Int {
     private var selectedAppPaths = Set<String>()
     private var appDragMonitor: Any?
     private weak var draggingItemView: AppItemView?
+    private var draggingItemViews: [AppItemView] = []
+    private var returningDragItemViews: [AppItemView] = []
     private var draggingApp: AppRecord?
-    private var dragFloatingView: NSImageView?
+    private var draggingApps: [AppRecord] = []
+    private var dragFloatingView: NSView?
     private var dragPointerOffset: NSPoint = .zero
     private weak var dropTargetItemView: AppItemView?
     private var edgePageTimer: Timer?
@@ -3397,24 +3401,150 @@ private enum AppSortOrder: Int {
     }
 
     // MARK: - 应用拖拽合并目录 (Drag-to-Folder & Edge Auto-Paging)
+    private var draggingAppPaths: Set<String> {
+        Set(draggingApps.map(\.path))
+    }
+
+    private func iconImageForDrag(_ app: AppRecord, itemLookup: [String: AppItemView]) -> NSImage {
+        if let item = itemLookup[app.path], let image = item.currentIconImage {
+            return image
+        }
+        if let cached = iconCache.object(forKey: app.path as NSString) {
+            return cached
+        }
+        return NSWorkspace.shared.icon(forFile: app.path)
+    }
+
+    private func makeDragFloatingView(iconFrameInBg: NSRect, appsToDrag: [AppRecord], itemLookup: [String: AppItemView]) -> NSView {
+        if appsToDrag.count <= 1, let first = appsToDrag.first {
+            let floating = NSImageView(frame: iconFrameInBg)
+            floating.image = iconImageForDrag(first, itemLookup: itemLookup)
+            floating.imageScaling = .scaleProportionallyUpOrDown
+            floating.wantsLayer = true
+            floating.layer?.shadowColor = NSColor.black.cgColor
+            floating.layer?.shadowOpacity = 0.38
+            floating.layer?.shadowRadius = 12
+            floating.layer?.shadowOffset = CGSize(width: 0, height: -4)
+            return floating
+        }
+
+        // 多选拖拽：堆叠显示最多 3 个应用图标，并在右上角显示数量角标
+        let container = NSView(frame: iconFrameInBg)
+        container.wantsLayer = true
+        container.layer?.masksToBounds = false
+
+        let previewApps = Array(appsToDrag.prefix(3))
+        let stackConfigs: [(dx: CGFloat, dy: CGFloat, angleDeg: CGFloat, alpha: CGFloat)] = [
+            (0, 0, 0, 1.0),
+            (7, -4, 5.5, 0.94),
+            (-7, -6, -6.5, 0.86)
+        ]
+
+        for idx in stride(from: previewApps.count - 1, through: 0, by: -1) {
+            let record = previewApps[idx]
+            let cfg = stackConfigs[min(idx, stackConfigs.count - 1)]
+            let iconView = NSImageView(frame: NSRect(
+                x: cfg.dx,
+                y: cfg.dy,
+                width: iconFrameInBg.width,
+                height: iconFrameInBg.height
+            ))
+            iconView.image = iconImageForDrag(record, itemLookup: itemLookup)
+            iconView.imageScaling = .scaleProportionallyUpOrDown
+            iconView.alphaValue = cfg.alpha
+            iconView.wantsLayer = true
+            iconView.layer?.shadowColor = NSColor.black.cgColor
+            iconView.layer?.shadowOpacity = idx == 0 ? 0.38 : 0.28
+            iconView.layer?.shadowRadius = idx == 0 ? 12 : 8
+            iconView.layer?.shadowOffset = CGSize(width: 0, height: -4)
+            if cfg.angleDeg != 0, let layer = iconView.layer {
+                let cx = iconView.bounds.midX
+                let cy = iconView.bounds.midY
+                var transform = CATransform3DIdentity
+                transform = CATransform3DTranslate(transform, cx, cy, 0)
+                transform = CATransform3DRotate(transform, cfg.angleDeg * .pi / 180, 0, 0, 1)
+                transform = CATransform3DTranslate(transform, -cx, -cy, 0)
+                layer.transform = transform
+            }
+            container.addSubview(iconView)
+        }
+
+        // 右上角数量角标
+        let badgeText = "\(appsToDrag.count)"
+        let badgeLabel = NSTextField(labelWithString: badgeText)
+        badgeLabel.font = .systemFont(ofSize: 12, weight: .bold)
+        badgeLabel.textColor = .white
+        badgeLabel.alignment = .center
+        badgeLabel.sizeToFit()
+
+        let badgeHeight: CGFloat = 22
+        let badgeWidth = max(badgeHeight, ceil(badgeLabel.frame.width) + 12)
+        let badge = NSView(frame: NSRect(
+            x: container.bounds.maxX - badgeWidth + 6,
+            y: container.bounds.maxY - badgeHeight + 6,
+            width: badgeWidth,
+            height: badgeHeight
+        ))
+        badge.wantsLayer = true
+        badge.layer?.backgroundColor = NSColor.systemRed.cgColor
+        badge.layer?.cornerRadius = badgeHeight / 2
+        badge.layer?.borderWidth = 1.5
+        badge.layer?.borderColor = NSColor.white.withAlphaComponent(0.92).cgColor
+        badge.layer?.shadowColor = NSColor.black.cgColor
+        badge.layer?.shadowOpacity = 0.32
+        badge.layer?.shadowRadius = 4
+        badge.layer?.shadowOffset = CGSize(width: 0, height: -1)
+
+        badgeLabel.frame = NSRect(
+            x: 0,
+            y: floor((badgeHeight - badgeLabel.frame.height) / 2),
+            width: badgeWidth,
+            height: badgeLabel.frame.height
+        )
+        badge.addSubview(badgeLabel)
+        container.addSubview(badge)
+
+        return container
+    }
+
     private func beginAppDrag(item: AppItemView, app: AppRecord, downEvent: NSEvent, currentEvent: NSEvent) {
         cancelAppDrag()
+
+        // 若被拖拽的应用在当前多选集合中，则将同作用域内所有已选应用一起拖动；
+        // 否则清除旧多选，仅拖动当前这一个应用。
+        let batch: [AppRecord]
+        if selectedAppPaths.contains(app.path) {
+            let others = selectionScopeApps.filter {
+                selectedAppPaths.contains($0.path) && !$0.path.hasPrefix("chu-folder:") && $0.path != app.path
+            }
+            batch = [app] + others
+        } else {
+            clearMultiSelection()
+            batch = [app]
+        }
+
+        let batchPaths = Set(batch.map(\.path))
+        var itemLookup: [String: AppItemView] = [app.path: item]
+        var hiddenItems: [AppItemView] = []
+        for view in activePages.allItems {
+            guard let path = view.appRecord?.path, batchPaths.contains(path) else { continue }
+            itemLookup[path] = view
+            hiddenItems.append(view)
+        }
+        if !hiddenItems.contains(where: { $0 === item }) {
+            hiddenItems.append(item)
+        }
+
         draggingItemView = item
+        draggingItemViews = hiddenItems
         draggingApp = app
+        draggingApps = batch
 
         let downPointInBg = backgroundView.convert(downEvent.locationInWindow, from: nil)
         let iconFrameInBg = item.convert(item.iconFrameInSelf, to: backgroundView)
         dragPointerOffset = NSPoint(x: downPointInBg.x - iconFrameInBg.midX, y: downPointInBg.y - iconFrameInBg.midY)
 
-        let floating = NSImageView(frame: iconFrameInBg)
-        floating.image = item.currentIconImage
-        floating.imageScaling = .scaleProportionallyUpOrDown
-        floating.wantsLayer = true
-        floating.layer?.shadowColor = NSColor.black.cgColor
-        floating.layer?.shadowOpacity = 0.38
-        floating.layer?.shadowRadius = 12
-        floating.layer?.shadowOffset = CGSize(width: 0, height: -4)
-
+        let floating = makeDragFloatingView(iconFrameInBg: iconFrameInBg, appsToDrag: batch, itemLookup: itemLookup)
         backgroundView.addSubview(floating, positioned: openFolder == nil ? .below : .above, relativeTo: folderBackdrop)
         if let layer = floating.layer {
             let center = CGPoint(x: floating.bounds.midX, y: floating.bounds.midY)
@@ -3422,12 +3552,14 @@ private enum AppSortOrder: Int {
             LauncherTransition.set(layer, keyPath: "transform", value: NSValue(caTransform3D: scale), duration: 0.12, curve: CAMediaTimingFunction(name: .easeOut))
         }
         dragFloatingView = floating
-        item.setDragSourceHidden(true)
+        for sourceView in hiddenItems {
+            sourceView.setDragSourceHidden(true)
+        }
 
         updateAppDrag(event: currentEvent)
     }
 
-    private func currentDropCandidate(windowPoint: NSPoint, draggedPath: String) -> AppItemView? {
+    private func currentDropCandidate(windowPoint: NSPoint, excludedPaths: Set<String>) -> AppItemView? {
         var points: [NSPoint] = []
         if let floating = dragFloatingView {
             let centerInBg = NSPoint(x: floating.frame.midX, y: floating.frame.midY)
@@ -3435,11 +3567,11 @@ private enum AppSortOrder: Int {
             points.append(centerInWindow)
         }
         points.append(windowPoint)
-        return pagedContainer.hitTestDropTarget(atWindowPoints: points, excludingPath: draggedPath)
+        return pagedContainer.hitTestDropTarget(atWindowPoints: points, excludingPaths: excludedPaths)
     }
 
     private func updateAppDrag(event: NSEvent) {
-        guard let floating = dragFloatingView, let dragged = draggingApp else { return }
+        guard let floating = dragFloatingView, draggingApp != nil else { return }
         let pointInBg = backgroundView.convert(event.locationInWindow, from: nil)
         let newOrigin = NSPoint(
             x: pointInBg.x - dragPointerOffset.x - floating.bounds.width / 2,
@@ -3459,8 +3591,8 @@ private enum AppSortOrder: Int {
             cancelEdgePageTurn()
         }
 
-        // 目标应用 / 目录命中检测（同时覆盖图标中心与指针位置）
-        let candidate = currentDropCandidate(windowPoint: event.locationInWindow, draggedPath: dragged.path)
+        // 目标应用 / 目录命中检测（排除所有正在一起拖动的应用）
+        let candidate = currentDropCandidate(windowPoint: event.locationInWindow, excludedPaths: draggingAppPaths)
         if candidate !== dropTargetItemView {
             dropTargetItemView?.setMergeHighlighted(false)
             dropTargetItemView = candidate
@@ -3484,11 +3616,9 @@ private enum AppSortOrder: Int {
                     self.pagedContainer.nextPage()
                 }
                 self.dropTargetItemView?.setMergeHighlighted(false)
-                if let dragged = self.draggingApp {
-                    let candidate = self.currentDropCandidate(windowPoint: windowPoint, draggedPath: dragged.path)
-                    self.dropTargetItemView = candidate
-                    candidate?.setMergeHighlighted(true)
-                }
+                let candidate = self.currentDropCandidate(windowPoint: windowPoint, excludedPaths: self.draggingAppPaths)
+                self.dropTargetItemView = candidate
+                candidate?.setMergeHighlighted(true)
             }
         }
     }
@@ -3505,19 +3635,21 @@ private enum AppSortOrder: Int {
             cancelAppDrag()
             return
         }
+        let batch = draggingApps.isEmpty ? [dragged] : draggingApps
+        let excludedPaths = Set(batch.map(\.path))
 
         if openFolder != nil {
             let point = folderPanel.convert(event.locationInWindow, from: nil)
             if !folderPanel.bounds.contains(point) {
                 cancelAppDrag()
-                move(dragged, to: nil)
+                moveAppsOutOfFolder(batch)
             } else {
                 cancelAppDrag()
             }
             return
         }
 
-        let targetView = dropTargetItemView ?? currentDropCandidate(windowPoint: event.locationInWindow, draggedPath: dragged.path)
+        let targetView = dropTargetItemView ?? currentDropCandidate(windowPoint: event.locationInWindow, excludedPaths: excludedPaths)
         let targetApp = targetView?.appRecord
         targetView?.setMergeHighlighted(false)
         dropTargetItemView = nil
@@ -3525,7 +3657,9 @@ private enum AppSortOrder: Int {
         if let targetView, let targetApp, let floating = dragFloatingView {
             let targetFrameInBg = targetView.convert(targetView.iconFrameInSelf, to: backgroundView)
             draggingApp = nil
+            draggingApps.removeAll()
             draggingItemView = nil
+            draggingItemViews.removeAll()
             dragFloatingView = nil
 
             if let layer = floating.layer {
@@ -3543,11 +3677,14 @@ private enum AppSortOrder: Int {
                     floating?.removeFromSuperview()
                 }
             })
-            mergeAppsIntoFolder(draggedApp: dragged, targetApp: targetApp)
+            mergeAppsIntoFolder(draggedApps: batch, targetApp: targetApp)
         } else if let floating = dragFloatingView, let sourceView = draggingItemView {
             let homeFrame = sourceView.convert(sourceView.iconFrameInSelf, to: backgroundView)
+            returningDragItemViews.append(contentsOf: draggingItemViews)
             draggingApp = nil
+            draggingApps.removeAll()
             draggingItemView = nil
+            draggingItemViews.removeAll()
             dragFloatingView = nil
 
             if let layer = floating.layer {
@@ -3557,10 +3694,14 @@ private enum AppSortOrder: Int {
                 context.duration = 0.18
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 floating.animator().setFrameOrigin(homeFrame.origin)
-            }, completionHandler: { [weak floating, weak sourceView] in
+            }, completionHandler: { [weak self, weak floating] in
                 Task { @MainActor in
                     floating?.removeFromSuperview()
-                    sourceView?.setDragSourceHidden(false)
+                    guard let self else { return }
+                    for view in self.returningDragItemViews {
+                        view.setDragSourceHidden(false)
+                    }
+                    self.returningDragItemViews.removeAll()
                 }
             })
         } else {
@@ -3574,20 +3715,47 @@ private enum AppSortOrder: Int {
         dropTargetItemView = nil
         dragFloatingView?.removeFromSuperview()
         dragFloatingView = nil
+        for view in draggingItemViews {
+            view.setDragSourceHidden(false)
+        }
+        draggingItemViews.removeAll()
+        for view in returningDragItemViews {
+            view.setDragSourceHidden(false)
+        }
+        returningDragItemViews.removeAll()
         draggingItemView?.setDragSourceHidden(false)
         draggingItemView = nil
         draggingApp = nil
+        draggingApps.removeAll()
         pointerDragging = false
     }
 
-    private func mergeAppsIntoFolder(draggedApp: AppRecord, targetApp: AppRecord) {
+    private func moveAppsOutOfFolder(_ batch: [AppRecord]) {
+        for app in batch where !app.path.hasPrefix("chu-folder:") {
+            layout.folders.removeValue(forKey: app.path)
+            if AppScanner.isInsideApplicationDirectory(path: app.path) {
+                layout.ungroupedPaths.insert(app.path)
+            } else {
+                layout.ungroupedPaths.remove(app.path)
+                if let index = apps.firstIndex(where: { $0.path == app.path }) {
+                    apps[index].folder = nil
+                }
+            }
+        }
+        clearMultiSelection()
+        persistLayoutAndRefresh()
+    }
+
+    private func mergeAppsIntoFolder(draggedApps: [AppRecord], targetApp: AppRecord) {
         let keepPage = pagedContainer.currentPage
-        let folderName = layout.merge(draggedApp: draggedApp, onto: targetApp, allApps: apps)
+        let folderName = layout.merge(draggedApps: draggedApps, onto: targetApp, allApps: apps)
+        let draggedPaths = Set(draggedApps.map(\.path))
         for index in apps.indices {
-            if apps[index].path == draggedApp.path || (!targetApp.path.hasPrefix("chu-folder:") && apps[index].path == targetApp.path) {
+            if draggedPaths.contains(apps[index].path) || (!targetApp.path.hasPrefix("chu-folder:") && apps[index].path == targetApp.path) {
                 apps[index].folder = folderName
             }
         }
+        clearMultiSelection()
         if openFolder != nil {
             folderSearchCapsule.stringValue = ""
             closeFolder()

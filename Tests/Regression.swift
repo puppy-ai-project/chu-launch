@@ -95,6 +95,17 @@ import Foundation
         precondition(folderLayout.folders[appB.path] == nil, "uninstalled app is pruned from folders")
         precondition(reconciledWithFolders.first(where: { $0.path == appA.path })?.folder == created1, "custom folder applies on reconcile")
 
+        // 批量拖拽合并：多选应用一起拖到目标应用 / 已有目录上
+        var multiLayout = Layout()
+        let appE = AppRecord(path: "/Applications/Echo.app", name: "Echo")
+        let batchFolder = multiLayout.merge(draggedApps: [appA, appB], onto: appC, allApps: [appA, appB, appC, appD, appE])
+        precondition(batchFolder == "新建文件夹", "batch merge onto ungrouped app creates folder")
+        precondition(multiLayout.folders[appA.path] == batchFolder && multiLayout.folders[appB.path] == batchFolder && multiLayout.folders[appC.path] == batchFolder, "all dragged apps and target app join new folder")
+        let folderItem = AppRecord(path: "chu-folder:\(batchFolder)", name: batchFolder)
+        let batchMergedIntoExisting = multiLayout.merge(draggedApps: [appD, appE], onto: folderItem, allApps: [appA, appB, appC, appD, appE])
+        precondition(batchMergedIntoExisting == batchFolder, "batch merge onto existing folder reuses folder name")
+        precondition(multiLayout.folders[appD.path] == batchFolder && multiLayout.folders[appE.path] == batchFolder, "all dragged apps join existing folder")
+
         print("Regression checks passed")
     }
 }
