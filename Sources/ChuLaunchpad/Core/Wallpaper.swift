@@ -3,7 +3,7 @@ import CoreImage
 
 // Background parameters can be overridden in Application Support/ChuLaunchpad/background.json.
 struct ChuBackgroundStyle: Codable, Sendable {
-    static let defaultBlurRadius: Double = 33
+    static let defaultBlurRadius: Double = 12
     static var defaultURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ChuLaunchpad/background.json")
     }

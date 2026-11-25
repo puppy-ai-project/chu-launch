@@ -814,8 +814,8 @@ enum SettingsTab {
     private let dockSwitch = NSSwitch()
     private let dockStatusLabel = NSTextField(labelWithString: "正在检查…")
     private let blurCard = FlippedView()
-    private let blurSlider = NSSlider(value: 33, minValue: 0, maxValue: 100, target: nil, action: nil)
-    private let blurValueLabel = NSTextField(labelWithString: "33")
+    private let blurSlider = NSSlider(value: ChuBackgroundStyle.defaultBlurRadius, minValue: 0, maxValue: 100, target: nil, action: nil)
+    private let blurValueLabel = NSTextField(labelWithString: "\(Int(ChuBackgroundStyle.defaultBlurRadius))")
     private let resetBlurButton: SettingsActionButton
 
     // MARK: 关于页组件
@@ -1183,11 +1183,12 @@ enum SettingsTab {
         blurValueLabel.frame = NSRect(x: 342, y: 25, width: 46, height: 18)
         blurCard.addSubview(blurValueLabel)
 
-        resetBlurButton.toolTip = "恢复默认模糊度 (33)"
+        resetBlurButton.toolTip = "恢复默认模糊度 (\(Int(ChuBackgroundStyle.defaultBlurRadius)))"
         resetBlurButton.onTap = { [weak self] in
             guard let self else { return }
-            self.setBlurRadius(33)
-            self.onBlurRadiusChanged?(33)
+            let defaultRadius = ChuBackgroundStyle.defaultBlurRadius
+            self.setBlurRadius(defaultRadius)
+            self.onBlurRadiusChanged?(defaultRadius)
         }
         blurCard.addSubview(resetBlurButton)
 
@@ -1526,13 +1527,13 @@ enum SettingsTab {
         blurSlider.doubleValue = clamped
         let rounded = Int(clamped.rounded())
         blurValueLabel.stringValue = "\(rounded)"
-        resetBlurButton.isEnabled = rounded != 33
+        resetBlurButton.isEnabled = rounded != Int(ChuBackgroundStyle.defaultBlurRadius)
     }
 
     @objc private func blurSliderChanged(_ sender: NSSlider) {
         let rounded = sender.doubleValue.rounded()
         blurValueLabel.stringValue = "\(Int(rounded))"
-        resetBlurButton.isEnabled = Int(rounded) != 33
+        resetBlurButton.isEnabled = Int(rounded) != Int(ChuBackgroundStyle.defaultBlurRadius)
         onBlurRadiusChanged?(rounded)
     }
 
