@@ -1788,21 +1788,38 @@ enum AnimationHelper {
 
     func animatePageVisibility(_ visible: Bool, duration: CFTimeInterval) -> CALayer? {
         guard pageViews.indices.contains(currentPage), let layer = pageViews[currentPage].layer else { return nil }
-        let scale: CGFloat = 1.04
-        var start = CATransform3DMakeScale(scale, scale, 1)
-        start.m41 = (0.5 - layer.anchorPoint.x) * layer.bounds.width * (1 - scale)
-        start.m42 = (0.5 - layer.anchorPoint.y) * layer.bounds.height * (1 - scale)
-        let zoom = CABasicAnimation(keyPath: "transform")
+        let scale: CGFloat = visible ? 1.12 : 1.08
+        var scaled = CATransform3DMakeScale(scale, scale, 1)
+        scaled.m41 = (0.5 - layer.anchorPoint.x) * layer.bounds.width * (1 - scale)
+        scaled.m42 = (0.5 - layer.anchorPoint.y) * layer.bounds.height * (1 - scale)
         let key = "launcher.pageZoom"
         let resting = CATransform3DIdentity
         let from = layer.animation(forKey: key) == nil ? nil : layer.presentation()?.transform
-        zoom.fromValue = NSValue(caTransform3D: from ?? (visible ? start : resting))
-        zoom.toValue = NSValue(caTransform3D: visible ? resting : start)
-        zoom.duration = duration
-        zoom.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        zoom.fillMode = .forwards
-        zoom.isRemovedOnCompletion = visible
-        layer.add(zoom, forKey: key)
+
+        if visible {
+            // 原生弹簧缩入：从 1.12x 舒展回弹落位到 1.0x
+            let spring = CASpringAnimation(keyPath: "transform")
+            spring.fromValue = NSValue(caTransform3D: from ?? scaled)
+            spring.toValue = NSValue(caTransform3D: resting)
+            spring.mass = 1.0
+            spring.stiffness = 190
+            spring.damping = 22
+            spring.initialVelocity = 0
+            spring.duration = spring.settlingDuration
+            spring.fillMode = .forwards
+            spring.isRemovedOnCompletion = true
+            layer.add(spring, forKey: key)
+        } else {
+            // 离场平滑收拢：向外轻放并柔和淡出
+            let zoom = CABasicAnimation(keyPath: "transform")
+            zoom.fromValue = NSValue(caTransform3D: from ?? resting)
+            zoom.toValue = NSValue(caTransform3D: scaled)
+            zoom.duration = duration
+            zoom.timingFunction = CAMediaTimingFunction(controlPoints: 0.35, 0.0, 0.7, 1.0)
+            zoom.fillMode = .forwards
+            zoom.isRemovedOnCompletion = false
+            layer.add(zoom, forKey: key)
+        }
         return layer
     }
 
@@ -3871,20 +3888,71 @@ private enum AppSortOrder: Int {
         hide()
     }
 
+    private func animateChromeVisibility(_ visible: Bool, duration: CFTimeInterval) {
+        let topViews: [NSView] = [searchCapsule, moreButton, updateNoticeButton, selectionCountLabel]
+        let key = "launcher.chromeSlide"
+        func applySlide(to view: NSView, offsetY: CGFloat) {
+            view.wantsLayer = true
+            guard let layer = view.layer else { return }
+            let shifted = CATransform3DMakeTranslation(0, offsetY, 0)
+            let resting = CATransform3DIdentity
+            let from = layer.animation(forKey: key) == nil ? nil : layer.presentation()?.transform
+            if visible {
+                let spring = CASpringAnimation(keyPath: "transform")
+                spring.fromValue = NSValue(caTransform3D: from ?? shifted)
+                spring.toValue = NSValue(caTransform3D: resting)
+                spring.mass = 1.0
+                spring.stiffness = 190
+                spring.damping = 23
+                spring.duration = spring.settlingDuration
+                spring.fillMode = .forwards
+                spring.isRemovedOnCompletion = true
+                layer.add(spring, forKey: key)
+            } else {
+                let slide = CABasicAnimation(keyPath: "transform")
+                slide.fromValue = NSValue(caTransform3D: from ?? resting)
+                slide.toValue = NSValue(caTransform3D: shifted)
+                slide.duration = duration
+                slide.timingFunction = CAMediaTimingFunction(controlPoints: 0.35, 0.0, 0.7, 1.0)
+                slide.fillMode = .forwards
+                slide.isRemovedOnCompletion = false
+                layer.add(slide, forKey: key)
+            }
+        }
+        for view in topViews {
+            applySlide(to: view, offsetY: visible ? 14 : 10)
+        }
+        applySlide(to: pageIndicator, offsetY: visible ? -10 : -8)
+    }
+
+    private func clearChromeVisibilityAnimations() {
+        let views: [NSView] = [searchCapsule, moreButton, updateNoticeButton, selectionCountLabel, pageIndicator]
+        for view in views {
+            view.layer?.removeAnimation(forKey: "launcher.chromeSlide")
+        }
+    }
+
     private func transition(visible: Bool, completion: (@MainActor () -> Void)? = nil) {
         transitionGeneration += 1
         let generation = transitionGeneration
         launcherTargetVisible = visible
         transitionInProgress = true
         let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let duration: CFTimeInterval = reduced ? 0.12 : backgroundView.style.animationDuration
+        // 进场舒展（~0.34s）、离场从容（~0.25s）
+        let baseDuration = backgroundView.style.animationDuration
+        let duration: CFTimeInterval = reduced ? 0.12 : (visible ? max(baseDuration, 0.34) : max(baseDuration * 0.85, 0.25))
         let zoomLayer = reduced ? nil : activePages.animatePageVisibility(visible, duration: duration)
+        if !reduced {
+            animateChromeVisibility(visible, duration: duration)
+        }
         let finish: @MainActor @Sendable () -> Void = { [weak self] in
             guard let self, self.transitionGeneration == generation else { return }
             self.transitionInProgress = false
             if !visible {
                 self.window.orderOut(nil)
                 zoomLayer?.removeAnimation(forKey: "launcher.pageZoom")
+                self.activePages.clearPageVisibilityAnimations()
+                self.clearChromeVisibilityAnimations()
                 self.menuCover?.orderOut(nil)
                 self.isLaunching = false
             }
@@ -3904,7 +3972,9 @@ private enum AppSortOrder: Int {
         if visible { menuCover?.orderFrontRegardless() }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.timingFunction = visible
+                ? CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+                : CAMediaTimingFunction(controlPoints: 0.35, 0.0, 0.7, 1.0)
             window.animator().alphaValue = visible ? 1 : 0
             menuCover?.animator().alphaValue = visible ? 1 : 0
         } completionHandler: {
